@@ -1,0 +1,5 @@
+day-trader-skill/
+__pycache__/
+*.pyc
+trader/
+
