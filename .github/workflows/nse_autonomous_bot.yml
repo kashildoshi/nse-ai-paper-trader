@@ -1,0 +1,27 @@
+name: NSE Autonomous Paper Trader
+on:
+  schedule:
+    - cron: "30-55/5 3 * * 1-5"
+    - cron: "*/5 4-9 * * 1-5"
+    - cron: "0 10 * * 1-5"
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  trade-cycle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python cloud_cycle.py
+      - run: |
+          git config user.name "NSE-Alpha-Bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add paper_trades.db
+          git diff --staged --quiet || (git commit -m "chore: update NSE paper_trades ledger" && git push)

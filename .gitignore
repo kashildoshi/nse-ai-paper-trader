@@ -1,5 +1,5 @@
-day-trader-skill/
+.env
+*.env
 __pycache__/
 *.pyc
-trader/
-
+dashboard_backup.py
