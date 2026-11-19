@@ -1,9 +1,36 @@
 {
   "rules": [
-    {"id": "opening-bell", "type": "opening_bell"},
-    {"id": "tsla-plan-stop", "symbol": "TSLA", "type": "stop", "price": 358.32, "note": "plan stop: opening-range midpoint", "date": "2026-10-19"},
-    {"id": "tsla-plan-target", "symbol": "TSLA", "type": "target", "price": 370.04, "note": "plan target: 1R (one times the risk)", "date": "2026-10-19"},
-    {"id": "tsla-flat-by", "symbol": "TSLA", "type": "time", "at": "15:55", "label": "flat by close", "before_close": true, "date": "2026-10-19"},
-    {"id": "tsla-move-3", "symbol": "TSLA", "type": "pct_move", "pct": 3}
+    {"id": "nse-opening-bell", "type": "opening_bell"},
+    {
+      "id": "reliance-plan-trail",
+      "symbol": "RELIANCE",
+      "type": "trail",
+      "entry": 2462.50,
+      "initial_stop": 2445.00,
+      "price": 2445.00,
+      "high_water": 2462.50,
+      "activate_pct": 0.5,
+      "trail_pct": 0.6,
+      "active": false,
+      "note": "illustrative ratcheting trailing stop (+0.5% arms, 0.6% trail)",
+      "date": "2026-11-18"
+    },
+    {
+      "id": "reliance-plan-target",
+      "symbol": "RELIANCE",
+      "type": "target",
+      "price": 2497.50,
+      "note": "illustrative 2R target",
+      "date": "2026-11-18"
+    },
+    {
+      "id": "reliance-safety-cutoff",
+      "symbol": "RELIANCE",
+      "type": "time",
+      "at": "15:20",
+      "label": "safety cutoff: square off MIS",
+      "date": "2026-11-18"
+    },
+    {"id": "tcs-move-3", "symbol": "TCS", "type": "pct_move", "pct": 3}
   ]
 }

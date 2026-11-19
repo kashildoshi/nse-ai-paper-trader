@@ -1,13 +1,22 @@
 {
   "mcpServers": {
-    "alpaca": {
-      "command": "uvx",
-      "args": ["alpaca-mcp-server"],
+    "upstox": {
+      "command": "npx",
+      "args": ["-y", "@upstox/mcp-server"],
       "env": {
-        "ALPACA_API_KEY": "YOUR_PAPER_API_KEY_TYPED_HERE_NEVER_IN_CHAT",
-        "ALPACA_SECRET_KEY": "YOUR_PAPER_SECRET_KEY_TYPED_HERE_NEVER_IN_CHAT",
-        "ALPACA_PAPER_TRADE": "true",
-        "ALPACA_TOOLSETS": "account,trading,stock-data"
+        "UPSTOX_ACCESS_TOKEN": "YOUR_UPSTOX_ACCESS_TOKEN_HERE_NEVER_IN_CHAT"
+      }
+    },
+    "angelone": {
+      "command": "python",
+      "args": ["-m", "angelone_mcp"],
+      "env": {
+        "ANGEL_ONE_API_KEY": "YOUR_SMARTAPI_KEY_HERE_NEVER_IN_CHAT",
+        "ANGEL_ONE_CLIENT_CODE": "YOUR_CLIENT_CODE",
+        "ANGEL_ONE_PASSWORD": "YOUR_PIN",
+        "ANGEL_ONE_TOTP_SECRET": "YOUR_TOTP_SECRET",
+        "DRY_RUN_MODE": "true",
+        "MAX_ORDER_QUANTITY": "1000"
       }
     }
   }

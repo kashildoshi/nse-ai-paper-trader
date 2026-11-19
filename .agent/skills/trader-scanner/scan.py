@@ -1,71 +1,27 @@
 #!/usr/bin/env python3
-"""Chart Scanner for trader-scanner: scan thousands of charts for setups. Standard library only.
+"""Chart Scanner for trader-scanner (NSE India edition). Standard library only.
 
-    python3 scan.py universe                          # Nasdaq Trader lists -> trader/universe.txt
-    python3 scan.py daily                             # before the open: daily setups -> trader/watchlist.json
-    python3 scan.py daily --symbols TSLA,NVDA,AMD     # or --watchlist FILE, or --limit 200
-    python3 scan.py orb                               # after 9:50 AM ET: opening-range breakouts so far
-    python3 scan.py orb --at 10:15 --or-minutes 15    # cut the clock at 10:15 AM ET
-    python3 scan.py orb --offline wall5m.json.gz --now "2026-10-19 10:15" --min-price 0
+    py scan.py universe                              # NSE index CSV (nifty200) -> trader/universe.txt
+    py scan.py daily                                 # before the open: daily setups -> trader/watchlist.json
+    py scan.py daily --symbols RELIANCE,TCS,INFY     # or --watchlist FILE, --limit 50
+    py scan.py orb                                   # after 09:30 IST: opening-range breakouts
+    py scan.py flag                                  # intraday bull flags
+    py scan.py triangle                              # intraday ascending/symmetrical triangles
+    py scan.py vwap                                  # intraday VWAP reclaims
+    py scan.py patterns --at 10:30                   # all 4 intraday patterns at once
+    py scan.py patterns --offline wall5m.json --now "2026-11-18 11:00"
 
-universe  Downloads Nasdaq Trader's symbol directories (nasdaqlisted.txt and
-          otherlisted.txt) and keeps US-listed common stocks, ordinary shares
-          and ADRs. The rule, in order:
-            1. not a test issue, not an ETF, not NextShares
-            2. a plain ticker: 1 to 5 letters, or 1 to 4 letters plus one
-               class letter after a dot (BRK.B); a .U / .W / .R suffix
-               (units, warrants, rights) is out, and so is a $ preferred
-            3. out, whatever else the name says: warrants; SPAC units and
-               rights ("Units, each consisting of", "Rights to receive");
-               notes, ETNs, debentures; a % coupon; "Depositary Shares" that
-               are not American or Global (those carry a preferred)
-            4. in: the name calls it common stock / shares / units, ordinary
-               shares, shares of beneficial interest, ADS / ADR / American or
-               Global depositary shares, or partnership / trust units
-            5. out: the name still says unit, right, bond, preferred or preference
-            6. in: everything else (plain names like "AMETEK, Inc.")
+All times are IST (UTC+05:30). Session 09:15-15:30 IST; opening range 09:15-09:30 IST.
+Liquidity filters: price >= --min-price (₹50 default) and avg/projected daily turnover
+>= --min-turnover-cr (₹25 crore default).
+Volume filter: intraday breakout bar volume >= --min-vol-ratio (1.5x default) times the
+average volume of prior session bars.
 
-daily     Pre-market scan of daily CLOSES (Yahoo spark: 20 symbols a request,
-          3 months of 1-day bars, closes only). Liquidity from the spark meta:
-          regularMarketPrice >= --min-price (5) and regularMarketVolume >=
-          --min-volume (1,000,000). Setups, from closes only:
-            breakout_20d     the last close is above every close of the 20 before it
-            bull_flag        up more than 10 % over the 10 sessions before the
-                             last 5, then the last 5 closes inside a 5 % range
-            reclaim_ma20     closed under the 20-day average, then closed above it
-            oversold         RSI 14 (Wilder) under 30
-            oversold_bounce  RSI 14 was under 30 yesterday and today closed up
-          Today's daily bar is dropped until the session's close.
-
-orb       Opening-range breakouts, 5-minute bars. The range is the first
-          --or-minutes (15) of the session. Stage 1: spark closes for every
-          symbol (1 day of 5-minute bars, 20 a request); a chart goes on only
-          if a completed bar after the range closed at or above the highest
-          close of the range (a necessary condition). Stage 2: each candidate's
-          v8 chart (real highs and lows): range high = the highest high of the
-          range bars, a hit = the first completed bar to CLOSE above it, at that
-          bar's close time. Stage 2 fetches at most --max-confirm (200) charts,
-          the most traded candidates first (price x volume so far), and says
-          so when it stops short. A chart is usable only when every 5-minute
-          bar from 9:30 to the cutoff is there (a missing bar is a halt or no
-          trades). Floors: --min-price 5 (last close), --min-volume 0.
-
-Bars: null closes are dropped, a bar off the 5-minute grid (the live tick,
-like 10:49:45) is dropped, and a bar counts only once it is complete
-(start + 5 minutes <= the clock). Times are New York (ET). --now pins the
-clock ("2026-10-19 10:15", New York time; ...Z for UTC).
-
-Yahoo's endpoints are free, unofficial and can lag. query2 first, query1 on
-a 429 or 5xx, one retry after a pause on a 429. A polite pause between
-requests (--pause). Partial results are reported as partial.
-
---offline PATH reads files instead of the network: universe wants a folder
-with nasdaqlisted.txt and otherlisted.txt; daily and orb take a folder of
-<T>.json v8 chart files or spark responses, or one file that is a spark
-response, a v8 chart, or a bundle {"TSLA": <v8 json>, ...}. .json.gz is fine.
+Data: Yahoo Finance (<SYMBOL>.NS, free, unofficial, delayed), Upstox API, or Angel One
+SmartAPI (via --feed or config.json data_feed).
 
 A scan is a list of charts that match a rule, not a list of stocks to buy.
-Exit code 0 when the scan found something, 1 when it did not or could not run.
+Exit code 0 when the scan found at least one hit (or universe succeeded), 1 otherwise.
 """
 
 import argparse
@@ -73,1009 +29,771 @@ import datetime
 import gzip
 import json
 import os
-import re
 import sys
-import time
 import urllib.error
-import urllib.request
 
-UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
-YAHOO_HOSTS = ("https://query2.finance.yahoo.com", "https://query1.finance.yahoo.com")
-NASDAQ_FILES = ("nasdaqlisted.txt", "otherlisted.txt")
-NASDAQ_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/"
-SPARK_MAX = 20      # Yahoo's spark answers 400 above 20 symbols
-PAUSE = 0.3         # seconds between requests: be polite to free endpoints
-BACKOFF = 5.0       # seconds to wait before the one retry after a 429
-SLEEP = time.sleep  # tests swap this out
-BAR_MIN = 5
-MAX_CONFIRM = 200   # stage-2 v8 charts per orb scan, most traded first
-MIN_DAILY_BARS = 30
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import nse_common as N
+
 DEFAULT_UNIVERSE = "trader/universe.txt"
+DEFAULT_WATCHLIST = "trader/watchlist.json"
+DEFAULT_CONFIG = "trader/config.json"
 NOTE = "A scan is a list of charts that match a rule, not a list of stocks to buy."
 
-NYSE_HOLIDAYS = {
-    "2026-01-01": "New Year's Day",
-    "2026-01-19": "Martin Luther King, Jr. Day",
-    "2026-02-16": "Washington's Birthday",
-    "2026-04-03": "Good Friday",
-    "2026-05-25": "Memorial Day",
-    "2026-06-19": "Juneteenth National Independence Day",
-    "2026-07-03": "Independence Day (observed)",
-    "2026-09-07": "Labor Day",
-    "2026-11-26": "Thanksgiving Day",
-    "2026-12-25": "Christmas Day",
-    "2027-01-01": "New Year's Day",
-    "2027-01-18": "Martin Luther King, Jr. Day",
-    "2027-02-15": "Washington's Birthday",
-    "2027-03-26": "Good Friday",
-    "2027-05-31": "Memorial Day",
-    "2027-06-18": "Juneteenth National Independence Day (observed)",
-    "2027-07-05": "Independence Day (observed)",
-    "2027-09-06": "Labor Day",
-    "2027-11-25": "Thanksgiving Day",
-    "2027-12-24": "Christmas Day (observed)",
-}
-NYSE_EARLY_CLOSE = {  # 1:00 p.m. ET
-    "2026-11-27": "day after Thanksgiving",
-    "2026-12-24": "Christmas Eve",
-    "2027-11-26": "day after Thanksgiving",
-}
-CALENDAR_YEARS = (2026, 2027)
-OPEN = datetime.time(9, 30)
-CLOSE = datetime.time(16, 0)
-EARLY = datetime.time(13, 0)
-
-SETUPS = [
+DAILY_SETUPS = [
     ("breakout_20d", "20-day closing-high breakout"),
-    ("bull_flag", "bull flag"),
+    ("bull_flag", "daily bull flag"),
     ("reclaim_ma20", "reclaimed the 20-day average"),
     ("oversold", "oversold (RSI under 30)"),
     ("oversold_bounce", "oversold bounce"),
+    ("triangle_daily", "daily triangle breakout"),
 ]
-LABEL = dict(SETUPS)
+INTRADAY_SETUPS = [
+    ("orb", "opening-range breakout"),
+    ("bull_flag", "bull flag"),
+    ("triangle", "triangle breakout"),
+    ("vwap_reclaim", "VWAP reclaim"),
+]
+LABEL = dict(DAILY_SETUPS + INTRADAY_SETUPS)
 
 
-class ScanError(Exception):
+class ScanError(N.NSEError):
     pass
 
 
-# ---------------------------------------------------------------- time
+# ---------------------------------------------------------------------------
+# Universe
+# ---------------------------------------------------------------------------
 
-def _nth_sunday(year, month, n):
-    d = datetime.date(year, month, 1)
-    d += datetime.timedelta(days=(6 - d.weekday()) % 7)
-    return d + datetime.timedelta(weeks=n - 1)
-
-
-def eastern_offset(utc):
-    """Hours from UTC for New York: -4 in daylight time, -5 otherwise.
-    DST runs from 2:00 a.m. on the second Sunday of March to 2:00 a.m. on the
-    first Sunday of November (US rule since 2007)."""
-    y = utc.year
-    start = datetime.datetime.combine(_nth_sunday(y, 3, 2), datetime.time(7, 0))   # 2:00 EST
-    end = datetime.datetime.combine(_nth_sunday(y, 11, 1), datetime.time(6, 0))    # 2:00 EDT
-    naive = utc.replace(tzinfo=None)
-    return -4 if start <= naive < end else -5
-
-
-def to_eastern(utc):
-    return utc.replace(tzinfo=None) + datetime.timedelta(hours=eastern_offset(utc))
-
-
-def eastern_to_utc(local):
-    for off in (-4, -5):
-        utc = local - datetime.timedelta(hours=off)
-        if eastern_offset(utc) == off:
-            return utc
-    return local + datetime.timedelta(hours=5)
+def load_universe(path=DEFAULT_UNIVERSE):
+    """Read trader/universe.txt -> [(sym, name, isin)]. Falls back to N.LIQUID_UNIVERSE."""
+    if path and os.path.exists(path):
+        rows = []
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("|")
+                sym = N.norm_symbol(parts[0])
+                name = parts[1].strip() if len(parts) > 1 else ""
+                isin = parts[2].strip() if len(parts) > 2 else ""
+                rows.append((sym, name, isin))
+        if rows:
+            return rows, path
+    return [(s, s, "") for s in N.LIQUID_UNIVERSE], "built-in liquid NSE universe"
 
 
-def ts_to_eastern(ts):
-    """Unix seconds -> naive New York time. Never uses the machine's time zone."""
-    return to_eastern(datetime.datetime(1970, 1, 1) + datetime.timedelta(seconds=int(ts)))
+def build_universe(index_name="nifty200", offline=None, out_path=DEFAULT_UNIVERSE):
+    """Fetch NSE index CSV (or --offline CSV) -> [(sym, name, isin)], fallback N.LIQUID_UNIVERSE."""
+    note = ""
+    rows = []
+    if offline:
+        if os.path.isdir(offline):
+            cands = [os.path.join(offline, f) for f in os.listdir(offline) if f.lower().endswith(".csv")]
+            if not cands:
+                raise ScanError("No CSV file found in offline folder %s." % offline)
+            src_path = cands[0]
+        else:
+            src_path = offline
+        txt = N.read_maybe_gz(src_path)
+        rows = N.parse_index_csv(txt)
+        note = "offline CSV (%s)" % os.path.basename(src_path)
+    else:
+        url = N.NSE_INDEX_CSV.get(index_name)
+        if not url:
+            raise ScanError("Unknown index %r (choose: %s)." % (index_name, ", ".join(N.NSE_INDEX_CSV)))
+        try:
+            raw = N.http_get(url, headers={"User-Agent": N.UA_BROWSER, "Referer": N.NSE_WWW + "/"})
+            rows = N.parse_index_csv(raw.decode("utf-8", "replace"))
+            note = "NSE %s index CSV" % index_name
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError, N.NSEError) as e:
+            rows = [(s, s, "") for s in N.LIQUID_UNIVERSE]
+            note = "built-in liquid NSE fallback (%d names; NSE CSV fetch failed: %s)" % (len(rows), e)
+
+    if not rows:
+        rows = [(s, s, "") for s in N.LIQUID_UNIVERSE]
+        note = "built-in liquid NSE fallback (%d names; CSV was empty)" % len(rows)
+
+    seen = {}
+    clean = []
+    for sym, name, isin in rows:
+        try:
+            ns = N.norm_symbol(sym)
+        except N.NSEError:
+            continue
+        if ns not in seen:
+            seen[ns] = True
+            clean.append((ns, name or ns, isin or ""))
+
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("# NSE universe (%s)\n" % note)
+        for sym, name, isin in clean:
+            f.write("%s|%s|%s\n" % (sym, name, isin))
+    return clean, note
 
 
-def parse_now(text):
-    """ISO time -> naive UTC. A time without an offset is taken as New York time."""
-    if not text:
-        return datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0, tzinfo=None)
-    t = text.strip().replace("Z", "+00:00")
-    try:
-        dt = datetime.datetime.fromisoformat(t)
-    except ValueError:
-        raise ScanError('--now wants a time like "2026-10-19 10:15" (New York) or ...Z (UTC)')
-    if dt.tzinfo is None:
-        return eastern_to_utc(dt)
-    return (dt - dt.utcoffset()).replace(tzinfo=None)
+# ---------------------------------------------------------------------------
+# Offline / feed loading for bars
+# ---------------------------------------------------------------------------
 
-
-def parse_hhmm(text, flag="--at"):
-    m = re.match(r"^\s*(\d{1,2}):(\d{2})\s*$", text or "")
-    if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
-        raise ScanError("%s wants a New York time like 10:15" % flag)
-    return datetime.time(int(m.group(1)), int(m.group(2)))
-
-
-def trading_day(d):
-    """(is_trading_day, reason). Weekends and the NYSE holiday list."""
-    if d.weekday() >= 5:
-        return False, "weekend"
-    name = NYSE_HOLIDAYS.get(d.isoformat())
-    if name:
-        return False, "NYSE holiday: " + name
-    return True, ""
-
-
-def session(d):
-    """(open_time, close_time) in New York time, or None if closed all day."""
-    ok, _ = trading_day(d)
-    if not ok:
+def _load_offline_bundle(offline_path):
+    """Returns dict {SYM: raw_doc_or_bars} or None if directory."""
+    if not offline_path:
         return None
-    return OPEN, (EARLY if d.isoformat() in NYSE_EARLY_CLOSE else CLOSE)
+    if os.path.isdir(offline_path):
+        out = {}
+        for fn in os.listdir(offline_path):
+            if fn.endswith((".json", ".json.gz")):
+                sym = fn.split(".")[0].upper()
+                if sym.endswith("_NS"):
+                    sym = sym[:-3]
+                if sym.endswith(".NS"):
+                    sym = sym[:-3]
+                out[sym] = json.loads(N.read_maybe_gz(os.path.join(offline_path, fn)))
+        return out
+    doc = json.loads(N.read_maybe_gz(offline_path))
+    if isinstance(doc, dict) and "chart" not in doc and "data" not in doc:
+        # bundle {SYM: doc_or_bars}
+        return {N.norm_symbol(k): v for k, v in doc.items()}
+    return {"_SINGLE": doc}
 
 
-def clock_label(t):
-    """datetime or time -> '10:15 AM'."""
-    h = t.hour % 12 or 12
-    return "%d:%02d %s" % (h, t.minute, "AM" if t.hour < 12 else "PM")
-
-
-def day_label(d):
-    return "%s %s" % (d.strftime("%a"), d.isoformat())
-
-
-# ---------------------------------------------------------------- network
-
-def http_get(url, timeout=20):
-    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read().decode("utf-8", "replace")
-
-
-def yahoo_get(path):
-    """GET a Yahoo Finance path. query2 first, query1 on a 429 or 5xx, and one
-    more round after BACKOFF seconds if a 429 was seen. 4xx other than 429 is final."""
-    last = "no answer"
-    for attempt in (0, 1):
-        saw_429 = False
-        for host in YAHOO_HOSTS:
-            try:
-                return http_get(host + path)
-            except urllib.error.HTTPError as e:
-                last = "HTTP %d" % e.code
-                try:
-                    body = e.read().decode("utf-8", "replace") if 400 <= e.code < 500 and e.code != 429 else ""
-                except Exception:
-                    body = ""
-                finally:
-                    e.close()
-                if e.code == 429:
-                    saw_429 = True
-                    continue
-                if e.code >= 500:
-                    continue
-                if body.strip().startswith("{"):
-                    return body  # Yahoo's JSON error ("No data found"), parsed by the caller
-                raise ScanError("Yahoo answered %s for %s" % (last, path.split("?")[0]))
-            except (urllib.error.URLError, OSError) as e:
-                last = str(getattr(e, "reason", e))
+def _bars_from_any(sym, raw, interval_min=5, now=None):
+    """Convert Yahoo v8 chart JSON, Upstox JSON, Angel JSON, or plain list of bar dicts."""
+    if isinstance(raw, list):
+        out = []
+        for b in raw:
+            t = b["t"]
+            dt = t if isinstance(t, datetime.datetime) else N.parse_now(str(t))
+            dt = N.to_ist(dt)
+            if now is not None and interval_min < 1440 and dt + datetime.timedelta(minutes=interval_min) > now:
                 continue
-        if attempt == 0 and saw_429:
-            SLEEP(BACKOFF)
-            continue
-        break
-    raise ScanError("Yahoo answered %s for %s" % (last, path.split("?")[0]))
+            out.append({
+                "t": dt, "o": float(b["o"]), "h": float(b["h"]),
+                "l": float(b["l"]), "c": float(b["c"]), "v": int(b.get("v", 0)),
+            })
+        out.sort(key=lambda x: x["t"])
+        return out
+    if isinstance(raw, dict):
+        if "chart" in raw:
+            bars, _ = N.bars_from_yahoo(raw, interval_min, drop_partial_at=now)
+            return bars
+        if "data" in raw and isinstance(raw["data"], dict) and "candles" in raw["data"]:
+            return N.bars_from_upstox(raw, interval_min, drop_partial_at=now)
+        if "data" in raw and isinstance(raw["data"], list):
+            return N.bars_from_angel(raw, interval_min, drop_partial_at=now)
+        if "bars" in raw:
+            return _bars_from_any(sym, raw["bars"], interval_min, now)
+    raise ScanError("Unrecognized chart format for %s." % sym)
 
 
-def to_yahoo(sym):
-    return sym.upper().replace(".", "-")
+def fetch_bars_for_symbol(sym, day, interval_min=5, feed="yahoo", now=None, cfg=None, offline_bundle=None):
+    """Return list of completed bars for `sym`."""
+    if offline_bundle is not None:
+        raw = offline_bundle.get(sym) or offline_bundle.get(N.yahoo_symbol(sym)) or offline_bundle.get("_SINGLE")
+        if raw is None:
+            raise ScanError("No offline bars for %s." % sym)
+        bars = _bars_from_any(sym, raw, interval_min, now)
+        if interval_min < 1440 and day is not None:
+            day_bars = [b for b in bars if b["t"].date() == day]
+            return day_bars if day_bars else bars
+        return bars
+
+    if interval_min >= 1440:
+        if feed == "upstox":
+            isin = N.load_upstox_instruments()
+            to_d = day.isoformat()
+            from_d = (day - datetime.timedelta(days=120)).isoformat()
+            doc = N.fetch_upstox_history(sym, 1440, to_d, from_d, isin)
+            bars = N.bars_from_upstox(doc, 1440, None)
+        elif feed in ("angelone", "angel"):
+            tokens = N.load_angel_tokens()
+            end_dt = datetime.datetime.combine(day, N.CLOSE, N.IST)
+            start_dt = end_dt - datetime.timedelta(days=120)
+            doc = N.fetch_angel_candles(sym, 1440, start_dt, end_dt, tokens)
+            bars = N.bars_from_angel(doc, 1440, None)
+        else:
+            doc = N.fetch_yahoo_chart(sym, interval="1d", rng="6mo")
+            bars, _ = N.bars_from_yahoo(doc, 1440, drop_partial_at=None)
+        # Drop today's partial daily bar if session isn't over yet
+        if now is not None and N.market_state(now, cfg) in ("pre_open", "open"):
+            bars = [b for b in bars if b["t"].date() < now.date()]
+        return bars
+
+    bars, _ = N.get_intraday_bars(sym, day, interval_min=interval_min, feed=feed, now=now, cfg=cfg)
+    return bars
 
 
-def spark_path(symbols, rng, interval):
-    return "/v7/finance/spark?symbols=%s&range=%s&interval=%s" % (
-        ",".join(to_yahoo(s) for s in symbols), rng, interval)
+# ---------------------------------------------------------------------------
+# Pure Liquidity & Pattern Detectors
+# ---------------------------------------------------------------------------
+
+def avg_turnover_cr(bars, lookback=20):
+    """Average daily turnover in ₹ crore across daily bars (or projected full-day turnover for intraday)."""
+    if not bars:
+        return 0.0
+    sample = bars[-lookback:] if len(bars) > lookback else bars
+    is_daily = len(sample) >= 2 and (sample[-1]["t"].date() != sample[0]["t"].date())
+    if is_daily:
+        vals = [(b["c"] * b["v"]) / 1e7 for b in sample if b.get("v", 0) > 0]
+        return round(sum(vals) / len(vals), 2) if vals else 0.0
+    # Intraday single-session bars: project cumulative turnover to full 75-bar (375-min) session
+    cum_cr = sum((b["c"] * b["v"]) / 1e7 for b in bars)
+    elapsed_frac = max(1, len(bars)) / 75.0
+    return round(cum_cr / min(1.0, elapsed_frac), 2)
 
 
-def chart_path(sym, rng, interval):
-    return "/v8/finance/chart/%s?range=%s&interval=%s" % (to_yahoo(sym), rng, interval)
+def passes_liquidity(bars, min_price=50.0, min_turnover_cr=25.0):
+    if not bars:
+        return False, 0.0
+    last_price = float(bars[-1]["c"])
+    t_cr = avg_turnover_cr(bars)
+    if last_price < float(min_price):
+        return False, t_cr
+    if t_cr < float(min_turnover_cr):
+        return False, t_cr
+    return True, t_cr
 
 
-# ---------------------------------------------------------------- parsing
-
-def series_from_result(res):
-    """A Yahoo chart result (v8 or one spark response) -> plain lists."""
-    q = ((res.get("indicators") or {}).get("quote") or [{}])[0] or {}
-    t = res.get("timestamp") or []
-    n = len(t)
-
-    def col(k):
-        v = q.get(k)
-        return list(v) + [None] * (n - len(v)) if isinstance(v, list) else None
-    return {"t": list(t), "c": col("close") or [None] * n, "o": col("open"), "h": col("high"),
-            "l": col("low"), "v": col("volume"), "meta": res.get("meta") or {}}
+def _vol_ratio(bars, idx):
+    """Volume of bar at `idx` divided by average volume of prior bars (at least 1 bar prior)."""
+    prior = [b["v"] for b in bars[:idx] if b["v"] > 0]
+    if not prior:
+        return 0.0
+    avg_v = sum(prior[-12:]) / len(prior[-12:])
+    if avg_v <= 0:
+        return 0.0
+    return round(bars[idx]["v"] / avg_v, 2)
 
 
-def parse_spark(text_or_doc, wanted=None):
-    """Spark JSON -> {SYM: series}. Symbols Yahoo does not know are simply missing
-    from the answer. `wanted` maps Yahoo symbols back to ours (BRK-B -> BRK.B)."""
-    doc = json.loads(text_or_doc) if isinstance(text_or_doc, str) else text_or_doc
-    sp = (doc or {}).get("spark") if isinstance(doc, dict) else None
-    if not isinstance(sp, dict):
-        raise ScanError("Yahoo's spark answer is not the shape this tool knows")
-    err = sp.get("error")
-    out = {}
-    for item in sp.get("result") or []:
-        resp = item.get("response") or []
-        if not resp:
-            continue
-        ysym = item.get("symbol") or (resp[0].get("meta") or {}).get("symbol") or ""
-        sym = (wanted or {}).get(ysym.upper(), ysym.upper().replace("-", "."))
-        out[sym] = series_from_result(resp[0])
-    if err and not out:
-        raise ScanError("Yahoo spark: %s" % (err.get("description") or err.get("code") or err))
-    return out
-
-
-def parse_chart(text_or_doc, sym=""):
-    """v8 chart JSON -> series. Raises ScanError for Yahoo's 'no data' answers."""
-    try:
-        doc = json.loads(text_or_doc) if isinstance(text_or_doc, str) else text_or_doc
-        chart = doc["chart"]
-    except (ValueError, KeyError, TypeError):
-        raise ScanError("Yahoo returned something unexpected for %s" % sym)
-    res = chart.get("result")
-    if not res:
-        err = chart.get("error") or {}
-        raise ScanError("no data for %s: %s" % (sym, err.get("description", "unknown ticker")))
-    return series_from_result(res[0])
-
-
-def _read_maybe_gz(path):
-    if path.endswith(".gz"):
-        with gzip.open(path, "rt", encoding="utf-8") as fh:
-            return fh.read()
-    with open(path, encoding="utf-8") as fh:
-        return fh.read()
-
-
-def _stem(name):
-    for ext in (".json.gz", ".json"):
-        if name.endswith(ext):
-            return name[:-len(ext)]
-    return name
-
-
-def _absorb(doc, name_hint, data, errors):
-    """One parsed offline JSON doc -> data / errors."""
-    if isinstance(doc, dict) and "spark" in doc:
-        data.update(parse_spark(doc))
-    elif isinstance(doc, dict) and "chart" in doc:
-        sym = name_hint
-        if not sym:
-            try:
-                sym = (doc["chart"].get("result") or [{}])[0]["meta"]["symbol"]
-            except (AttributeError, KeyError, TypeError, IndexError):
-                raise ScanError("an offline v8 chart without a symbol: name the file <TICKER>.json")
-        sym = sym.upper().replace("-", ".")
-        try:
-            data[sym] = parse_chart(doc, sym)
-        except ScanError as e:
-            errors[sym] = str(e)
-    elif isinstance(doc, dict):
-        for k, v in doc.items():
-            _absorb(v, k, data, errors)
-    else:
-        raise ScanError("offline file %s is not a spark answer, a v8 chart or a bundle" % name_hint)
-
-
-def load_offline(path):
-    """A folder of <T>.json(.gz) files or one file -> ({SYM: series}, {SYM: error})."""
-    data, errors = {}, {}
-    if os.path.isdir(path):
-        names = sorted(f for f in os.listdir(path) if f.endswith((".json", ".json.gz")))
-        if not names:
-            raise ScanError("no .json files in %s" % path)
-        for f in names:
-            try:
-                doc = json.loads(_read_maybe_gz(os.path.join(path, f)))
-            except ValueError as e:
-                raise ScanError("%s is not valid JSON: %s" % (f, e))
-            if isinstance(doc, dict) and ("chart" in doc or "spark" in doc):
-                _absorb(doc, "" if "spark" in doc else _stem(f), data, errors)
-            else:
-                _absorb(doc, "", data, errors)
-    elif os.path.isfile(path):
-        try:
-            doc = json.loads(_read_maybe_gz(path))
-        except ValueError as e:
-            raise ScanError("%s is not valid JSON: %s" % (path, e))
-        _absorb(doc, "", data, errors)
-    else:
-        raise ScanError("no offline file or folder at %s" % path)
-    return data, errors
-
-
-# ---------------------------------------------------------------- universe
-
-TICKER = re.compile(r"^[A-Z]{1,5}$|^[A-Z]{1,4}\.[A-Z]$")
-ALWAYS_OUT = [
-    ("warrant", re.compile(r"\bwarrants?\b")),
-    ("unit or right", re.compile(r"\b(units?|rights?),? (each|that|entitling)\b|(?<!the )\brights? to\b")),
-    ("note", re.compile(r"\b(notes?|etns?|debentures?)\b")),
-    ("coupon", re.compile(r"%")),
-    ("depositary", re.compile(r"(?<!american )(?<!global )\bdepositary shares?\b")),
-]
-COMMON = re.compile(
-    r"\bcommon (stock|shares?|units?)\b|\bord(inary)? shares?\b|\bshares? of beneficial interest\b"
-    r"|\b(american|global) deposit[ao]ry\b|\bads[s]?\b|\badrs?\b"
-    r"|\b(limited partnership|partnership|trust) units?\b|\bl\.?p\.? units?\b"
-    r"|\bunits? (of|representing)\b.*\b(limited partner|partnership|beneficial interest|limited liability)")
-SOFT_OUT = [
-    ("unit", re.compile(r"\bunits?\b")),
-    ("right", re.compile(r"\brights?\b")),
-    ("bond", re.compile(r"\bbonds?\b")),
-    ("preferred", re.compile(r"\bpreferred\b|\bpreference\b")),
-]
-
-
-def classify(row):
-    """One symbol-directory row -> 'keep' or the rule that drops it."""
-    sym = (row.get("Symbol") or row.get("ACT Symbol") or "").strip()
-    if (row.get("Test Issue") or "").strip() != "N":
-        return "test issue"
-    if (row.get("ETF") or "").strip() != "N":
-        return "ETF"
-    if (row.get("NextShares") or "N").strip() != "N":
-        return "NextShares"
-    if not TICKER.match(sym):
-        return "not a plain ticker"
-    if re.search(r"\.[UWR]$", sym):
-        return "unit / warrant / right suffix"
-    name = " ".join((row.get("Security Name") or "").lower().split())
-    for tag, rx in ALWAYS_OUT:
-        if rx.search(name):
-            return tag
-    if COMMON.search(name):
-        return "keep"
-    for tag, rx in SOFT_OUT:
-        if rx.search(name):
-            return tag
-    return "keep"
-
-
-def parse_symdir(text):
-    """Nasdaq Trader pipe file -> (rows, file_created). The last line is 'File Creation Time: ...'."""
-    lines = [ln for ln in text.replace("\r", "").split("\n") if ln.strip()]
-    if not lines or "|" not in lines[0]:
-        raise ScanError("not a Nasdaq Trader symbol directory")
-    hdr = [h.strip() for h in lines[0].split("|")]
-    if "Security Name" not in hdr or not ({"Symbol", "ACT Symbol"} & set(hdr)):
-        raise ScanError("not a Nasdaq Trader symbol directory (header %s)" % lines[0][:60])
-    rows, created = [], None
-    for ln in lines[1:]:
-        if ln.startswith("File Creation Time"):
-            m = re.search(r"(\d{2})(\d{2})(\d{4})(\d{2}):(\d{2})", ln)
-            if m:
-                created = "%s-%s-%s %s:%s" % (m.group(3), m.group(1), m.group(2), m.group(4), m.group(5))
-            continue
-        rows.append(dict(zip(hdr, ln.split("|"))))
-    return rows, created
-
-
-def build_universe(texts):
-    """{filename: text} -> (kept [(SYM, name)], counts, created)."""
-    kept, counts, created = {}, {}, None
-    for fname in NASDAQ_FILES:
-        if fname not in texts:
-            raise ScanError("missing %s" % fname)
-        rows, c = parse_symdir(texts[fname])
-        created = created or c
-        counts["rows"] = counts.get("rows", 0) + len(rows)
-        for r in rows:
-            why = classify(r)
-            counts[why] = counts.get(why, 0) + 1
-            if why == "keep":
-                sym = (r.get("Symbol") or r.get("ACT Symbol")).strip()
-                kept[sym] = " ".join((r.get("Security Name") or "").split())
-    return sorted(kept.items()), counts, created
-
-
-# ---------------------------------------------------------------- daily setups
-
-def rsi(closes, n=14):
-    """Wilder's RSI on closes (the same math as the reel's refs/scan.py)."""
-    if len(closes) < n + 1:
+def detect_orb(bars, or_minutes=15, min_vol_ratio=1.5):
+    """Opening-range breakout on 5m bars (09:15-09:30 IST by default).
+    First completed bar after the opening range that CLOSES strictly above or_high
+    with bar volume >= min_vol_ratio * avg prior bar volume."""
+    if not bars:
         return None
-    g = [max(0.0, closes[i] - closes[i - 1]) for i in range(1, len(closes))]
-    lo = [max(0.0, closes[i - 1] - closes[i]) for i in range(1, len(closes))]
-    ag, al = sum(g[:n]) / n, sum(lo[:n]) / n
-    for i in range(n, len(g)):
-        ag = (ag * (n - 1) + g[i]) / n
-        al = (al * (n - 1) + lo[i]) / n
-    return 100 - 100 / (1 + ag / al) if al else 100.0
-
-
-def daily_closes(series, now_utc):
-    """[(date, close)] of COMPLETE daily bars: null closes dropped, today's bar dropped
-    until the session closes, anything dated after the clock dropped."""
-    now = to_eastern(now_utc)
-    today = now.date()
-    s = session(today)
-    today_done = s is None or now.time() >= s[1]
-    out = {}
-    for ts, c in zip(series["t"], series["c"]):
-        if c is None:
-            continue
-        d = ts_to_eastern(ts).date()
-        if d > today or (d == today and not today_done):
-            continue
-        out[d] = float(c)  # one bar a day: a late duplicate (the live tick) wins
-    return sorted(out.items())
-
-
-def find_setups(closes):
-    """closes (oldest first, >= 30) -> (setup keys, numbers)."""
-    c = closes
-    last = c[-1]
-    hi20 = max(c[-21:-1])
-    ma20 = sum(c[-20:]) / 20.0
-    ma20_prev = sum(c[-21:-1]) / 20.0
-    run = c[-6] / c[-16] - 1
-    rng5 = (max(c[-5:]) - min(c[-5:])) / last
-    r = rsi(c)
-    r_prev = rsi(c[:-1])
-    tags = []
-    if last > hi20:
-        tags.append("breakout_20d")
-    if run > 0.10 and rng5 < 0.05:
-        tags.append("bull_flag")
-    if c[-2] < ma20_prev and last > ma20:
-        tags.append("reclaim_ma20")
-    if r is not None and r < 30:
-        tags.append("oversold")
-    if r_prev is not None and r_prev < 30 and last > c[-2]:
-        tags.append("oversold_bounce")
-    return tags, {"rsi": r, "rsi_prev": r_prev, "high20": hi20, "ma20": ma20,
-                  "run_pct": run * 100, "range5_pct": rng5 * 100}
-
-
-def scan_daily(data, symbols, now_utc, min_price, min_volume):
-    """Pure. data = {SYM: series}. Returns (hits, counts, last_date)."""
-    hits, dates = [], {}
-    counts = {"requested": len(symbols), "fetched": 0, "illiquid": 0, "short": 0, "scanned": 0}
-    for sym in symbols:
-        s = data.get(sym)
-        if not s:
-            continue
-        counts["fetched"] += 1
-        bars = daily_closes(s, now_utc)
-        meta = s.get("meta") or {}
-        price = meta.get("regularMarketPrice")
-        if price is None and bars:
-            price = bars[-1][1]
-        vol = meta.get("regularMarketVolume")
-        if price is None or price < min_price or (min_volume > 0 and (vol is None or vol < min_volume)):
-            counts["illiquid"] += 1
-            continue
-        if len(bars) < MIN_DAILY_BARS:
-            counts["short"] += 1
-            continue
-        counts["scanned"] += 1
-        d_last = bars[-1][0]
-        dates[d_last] = dates.get(d_last, 0) + 1
-        closes = [c for _, c in bars]
-        tags, nums = find_setups(closes)
-        if tags:
-            hits.append({"symbol": sym, "setups": tags, "price": round(closes[-1], 2),
-                         "close_date": d_last.isoformat(), "rsi": round(nums["rsi"], 1),
-                         "volume": int(vol) if vol is not None else None})
-    hits.sort(key=lambda h: (-(h["price"] * (h["volume"] or 0)), h["symbol"]))  # most dollars traded first
-    last_date = max(dates, key=lambda d: (dates[d], d)) if dates else None
-    counts["hits"] = len(hits)
-    return hits, counts, last_date
-
-
-# ---------------------------------------------------------------- opening-range breakout
-
-def slot(day, k):
-    return datetime.datetime.combine(day, OPEN) + datetime.timedelta(minutes=BAR_MIN * k)
-
-
-def session_bars(series, day, cutoff):
-    """5-minute bars of `day` that are complete at `cutoff` (naive New York time),
-    on the grid, with a close. Sorted, one per slot."""
-    s = session(day)
-    close_t = s[1] if s else CLOSE
-    out = {}
-    hs, ls = series.get("h"), series.get("l")
-    for i, ts in enumerate(series["t"]):
-        c = series["c"][i]
-        if c is None:
-            continue
-        et = ts_to_eastern(ts)
-        if et.date() != day or et.second or et.minute % BAR_MIN:
-            continue  # another day, or the live tick off the grid
-        if et.time() < OPEN or et.time() >= close_t:
-            continue  # pre-market, after hours, the 4:00 PM closing print
-        if et + datetime.timedelta(minutes=BAR_MIN) > cutoff:
-            continue  # still in progress at the cutoff
-        v = series.get("v")
-        out[et] = {"start": et, "c": float(c),
-                   "h": None if not hs or hs[i] is None else float(hs[i]),
-                   "l": None if not ls or ls[i] is None else float(ls[i]),
-                   "v": (v[i] or 0) if v else 0}
-    return [out[k] for k in sorted(out)]
-
-
-def usable(bars, day, cutoff, n_range):
-    """Every slot from 9:30 to the cutoff is there, and at least the range."""
-    want = int((cutoff - slot(day, 0)).total_seconds() // (BAR_MIN * 60))
-    s = session(day)
-    if s:
-        want = min(want, int((datetime.datetime.combine(day, s[1]) - slot(day, 0)).total_seconds()
-                             // (BAR_MIN * 60)))
-    if want < n_range or len(bars) != want:
-        return False
-    return all(b["start"] == slot(day, k) for k, b in enumerate(bars))
-
-
-def orb_candidate(bars, n_range):
-    """Stage 1, closes only: some completed bar after the range closed at or above
-    the highest close of the range. Necessary for a breakout (range high >= any range close)."""
-    top = max(b["c"] for b in bars[:n_range])
-    return any(b["c"] >= top for b in bars[n_range:])
-
-
-def orb_hit(bars, n_range):
-    """Stage 2, real highs and lows: the first completed bar to CLOSE above the range high."""
-    rng = bars[:n_range]
-    if any(b["h"] is None or b["l"] is None for b in rng):
+    day = bars[0]["t"].date()
+    start_dt = datetime.datetime.combine(day, N.OPEN, N.IST)
+    or_end = start_dt + datetime.timedelta(minutes=or_minutes)
+    or_bars = [b for b in bars if start_dt <= b["t"] < or_end]
+    expected = max(1, or_minutes // 5)
+    if len(or_bars) < expected:
         return None
-    oh = max(b["h"] for b in rng)
-    ol = min(b["l"] for b in rng)
-    for k in range(n_range, len(bars)):
-        b = bars[k]
-        if b["c"] > oh:
-            closes_at = b["start"] + datetime.timedelta(minutes=BAR_MIN)
-            return {"price": round(b["c"], 2), "at": clock_label(closes_at),
-                    "bar_start": b["start"].strftime("%H:%M"), "bar_index": k,
-                    "or_high": round(oh, 2), "or_low": round(ol, 2),
-                    "pct_over": round((b["c"] / oh - 1) * 100, 2), "_t": closes_at}
+    or_high = max(b["h"] for b in or_bars)
+    or_low = min(b["l"] for b in or_bars)
+    or_mid = N.round_tick((or_high + or_low) / 2.0, "down")
+
+    for idx, b in enumerate(bars):
+        if b["t"] < or_end:
+            continue
+        if b["c"] > or_high:
+            vr = _vol_ratio(bars, idx)
+            if vr < float(min_vol_ratio):
+                continue
+            close_dt = b["t"] + datetime.timedelta(minutes=5)
+            over_pct = round((b["c"] - or_high) / or_high * 100.0, 2)
+            return {
+                "setup": "orb",
+                "label": LABEL["orb"],
+                "price": round(b["c"], 2),
+                "time": N.fmt_time(close_dt),
+                "bar_index": idx,
+                "volume_ratio": vr,
+                "over_pct": over_pct,
+                "levels": {
+                    "or_high": round(or_high, 2),
+                    "or_low": round(or_low, 2),
+                    "or_mid": or_mid,
+                    "pattern_low": or_mid,
+                    "trigger_level": round(or_high, 2),
+                },
+            }
     return None
 
 
-def orb_window(now_utc, at, or_minutes, until, explicit_day=None):
-    """-> (day, cutoff naive ET) or raise ScanError with the plain message."""
-    now = to_eastern(now_utc)
-    day = explicit_day or now.date()
-    if or_minutes < BAR_MIN or or_minutes % BAR_MIN or or_minutes > 120:
-        raise ScanError("--or-minutes wants a multiple of 5 from 5 to 120 (15 is the classic)")
-    ok, why = trading_day(day)
-    if not ok:
-        raise ScanError("No session on %s (%s): the market is closed. Run orb on a trading day "
-                        "after the opening range, or replay a past day with --offline." % (day_label(day), why))
-    s = session(day)
-    range_end = slot(day, or_minutes // BAR_MIN)
-    first_close = range_end + datetime.timedelta(minutes=BAR_MIN)
-    close_dt = datetime.datetime.combine(day, s[1])
-    if at is not None:
-        cutoff = datetime.datetime.combine(day, at)
-        if explicit_day is None and cutoff > now + datetime.timedelta(seconds=59):
-            raise ScanError("--at %s is later than now (%s ET)." % (at.strftime("%H:%M"), clock_label(now)))
-        if cutoff > close_dt:
-            raise ScanError("--at %s is after the %s close on %s." % (at.strftime("%H:%M"), clock_label(close_dt),
-                                                                       day_label(day)))
-    else:
-        cutoff = now.replace(second=0, microsecond=0)
-        if cutoff >= close_dt:
-            raise ScanError("The market closed at %s ET on %s. Replay the session with --at 10:15."
-                            % (clock_label(close_dt), day_label(day)))
-    if cutoff < first_close:
-        raise ScanError("It is %s ET: the %d-minute opening range runs 9:30 to %s and the first bar after it "
-                        "closes at %s. Run orb again after %s."
-                        % (clock_label(cutoff), or_minutes, clock_label(range_end), clock_label(first_close),
-                           clock_label(first_close)))
-    if until is not None and cutoff.time() > until:
-        raise ScanError("It is %s ET, after %s, your last time for new entries (no_entries_after): an "
-                        "opening-range breakout found now is expired. Run orb tomorrow after %s, or replay "
-                        "today with --at 10:15." % (clock_label(cutoff), until.strftime("%H:%M"),
-                                                      clock_label(first_close)))
-    return day, cutoff
-
-
-def scan_orb(stage1, symbols, day, cutoff, or_minutes, min_price=0.0, min_volume=0, confirm=None,
-             max_confirm=None):
-    """stage1 = {SYM: series} with closes (spark or v8). confirm(sym) -> series with highs/lows
-    (None = use the stage-1 series). With confirm and max_confirm, only the max_confirm most
-    traded candidates (price x volume so far) are confirmed; the rest are counted as unconfirmed.
-    Returns (hits, counts, failed {sym: why})."""
-    n_range = or_minutes // BAR_MIN
-    counts = {"requested": len(symbols), "fetched": 0, "unusable": 0, "illiquid": 0, "scanned": 0,
-              "candidates": 0, "confirmed": 0, "unconfirmed": 0}
-    hits, failed, cands = [], {}, []
-    for sym in symbols:
-        s = stage1.get(sym)
-        if not s:
-            continue
-        counts["fetched"] += 1
-        bars = session_bars(s, day, cutoff)
-        if not usable(bars, day, cutoff, n_range):
-            counts["unusable"] += 1
-            continue
-        vol = sum(b["v"] for b in bars) if s.get("v") else (s.get("meta") or {}).get("regularMarketVolume") or 0
-        if bars[-1]["c"] < min_price or vol < min_volume:
-            counts["illiquid"] += 1
-            continue
-        counts["scanned"] += 1
-        if orb_candidate(bars, n_range):
-            cands.append((sym, bars, bars[-1]["c"] * vol))
-    counts["candidates"] = len(cands)
-    if confirm is not None and max_confirm and len(cands) > max_confirm:
-        cands.sort(key=lambda x: -x[2])
-        counts["unconfirmed"] = len(cands) - max_confirm
-        cands = cands[:max_confirm]
-    for sym, bars, _ in cands:
-        full = bars
-        if confirm is not None:
-            try:
-                s2 = confirm(sym)
-            except ScanError as e:
-                failed[sym] = str(e)
+def detect_bull_flag(bars, min_vol_ratio=1.5, min_pole_pct=1.2, max_retrace=0.55):
+    """Intraday bull flag on 5m bars:
+    1) Impulse pole: 3..8 consecutive/window bars gaining >= min_pole_pct % from pole_low to pole_high.
+    2) Consolidation flag: 3..8 bars holding inside upper half (flag_low >= pole_high - max_retrace * pole_height)
+       with lower average volume than the pole.
+    3) Breakout bar closing strictly above flag_high with volume >= min_vol_ratio * avg prior volume."""
+    n = len(bars)
+    if n < 8:
+        return None
+    for brk_idx in range(7, n):
+        brk = bars[brk_idx]
+        for flag_len in range(3, 9):
+            f_start = brk_idx - flag_len
+            if f_start < 3:
                 continue
-            full = session_bars(s2, day, cutoff)
-            if not usable(full, day, cutoff, n_range):
-                failed[sym] = "the v8 chart has a missing bar"
+            flag_bars = bars[f_start:brk_idx]
+            flag_high = max(b["h"] for b in flag_bars)
+            flag_low = min(b["l"] for b in flag_bars)
+            if brk["c"] <= flag_high:
                 continue
-        counts["confirmed"] += 1
-        h = orb_hit(full, n_range)
-        if h:
-            hits.append(dict({"symbol": sym, "setups": ["orb"]}, **h))
-    hits.sort(key=lambda x: (x["_t"], x["symbol"]))
-    for h in hits:
-        del h["_t"]
-    counts["hits"] = len(hits)
-    return hits, counts, failed
+            for pole_len in range(3, 9):
+                p_start = f_start - pole_len
+                if p_start < 0:
+                    continue
+                pole_bars = bars[p_start:f_start]
+                pole_low = min(b["l"] for b in pole_bars)
+                pole_high = max(b["h"] for b in pole_bars)
+                if pole_low <= 0:
+                    continue
+                pole_gain_pct = (pole_high - pole_low) / pole_low * 100.0
+                if pole_gain_pct < min_pole_pct:
+                    continue
+                # Pole must generally rise (last pole bar close near upper part of pole)
+                if pole_bars[-1]["c"] < pole_low + 0.6 * (pole_high - pole_low):
+                    continue
+                pole_height = pole_high - pole_low
+                if flag_low < pole_high - max_retrace * pole_height:
+                    continue
+                # Flag tightness & lower volume during consolidation
+                if flag_high > pole_high * 1.004:
+                    continue
+                pole_vol = sum(b["v"] for b in pole_bars) / len(pole_bars)
+                flag_vol = sum(b["v"] for b in flag_bars) / len(flag_bars)
+                if pole_vol > 0 and flag_vol > pole_vol * 0.95:
+                    continue
+                vr = _vol_ratio(bars, brk_idx)
+                if vr < float(min_vol_ratio):
+                    continue
+                close_dt = brk["t"] + datetime.timedelta(minutes=5)
+                return {
+                    "setup": "bull_flag",
+                    "label": LABEL["bull_flag"],
+                    "price": round(brk["c"], 2),
+                    "time": N.fmt_time(close_dt),
+                    "bar_index": brk_idx,
+                    "volume_ratio": vr,
+                    "over_pct": round((brk["c"] - flag_high) / flag_high * 100.0, 2),
+                    "levels": {
+                        "pole_low": round(pole_low, 2),
+                        "pole_high": round(pole_high, 2),
+                        "flag_high": round(flag_high, 2),
+                        "flag_low": round(flag_low, 2),
+                        "pattern_low": round(flag_low, 2),
+                        "trigger_level": round(flag_high, 2),
+                    },
+                }
+    return None
 
 
-# ---------------------------------------------------------------- fetching
+def detect_triangle(bars, min_vol_ratio=1.5, min_bars=6, max_bars=15):
+    """Ascending or symmetrical triangle breakout on 5m bars:
+    Window of 6..15 bars prior to breakout where:
+    - Higher lows across first half vs second half (min low of second half > min low of first half)
+    - Resistance is flat or slightly descending (second half max high <= first half max high * 1.002)
+    - Range narrows (second half range < first half range * 0.85)
+    - Breakout bar closes strictly above upper resistance with volume >= min_vol_ratio."""
+    n = len(bars)
+    if n < min_bars + 1:
+        return None
+    for brk_idx in range(min_bars, n):
+        brk = bars[brk_idx]
+        for w_len in range(min(max_bars, brk_idx), min_bars - 1, -1):
+            win = bars[brk_idx - w_len:brk_idx]
+            half = w_len // 2
+            h1, h2 = win[:half], win[half:]
+            hi1, lo1 = max(b["h"] for b in h1), min(b["l"] for b in h1)
+            hi2, lo2 = max(b["h"] for b in h2), min(b["l"] for b in h2)
+            # Higher lows, flat/lower highs, narrowing range
+            if lo2 <= lo1:
+                continue
+            if hi2 > hi1 * 1.002:
+                continue
+            r1 = hi1 - lo1
+            r2 = hi2 - lo2
+            if r1 <= 0 or r2 >= r1 * 0.85:
+                continue
+            upper = round(max(hi1, hi2) if abs(hi1 - hi2) / hi1 <= 0.002 else hi2, 2)
+            lower = round(lo2, 2)
+            if brk["c"] <= upper:
+                continue
+            vr = _vol_ratio(bars, brk_idx)
+            if vr < float(min_vol_ratio):
+                continue
+            close_dt = brk["t"] + datetime.timedelta(minutes=5)
+            return {
+                "setup": "triangle",
+                "label": LABEL["triangle"],
+                "price": round(brk["c"], 2),
+                "time": N.fmt_time(close_dt),
+                "bar_index": brk_idx,
+                "volume_ratio": vr,
+                "over_pct": round((brk["c"] - upper) / upper * 100.0, 2),
+                "levels": {
+                    "triangle_upper": upper,
+                    "triangle_lower": lower,
+                    "pattern_low": lower,
+                    "trigger_level": upper,
+                },
+            }
+    return None
 
-def progress(a, msg):
-    if not getattr(a, "json", False) and not getattr(a, "quiet", False):
-        print(msg, file=sys.stderr)
 
-
-def fetch_spark(symbols, rng, interval, pause, a=None):
-    """Batches of 20. -> ({SYM: series}, {SYM: error})."""
-    data, failed = {}, {}
-    batches = [symbols[i:i + SPARK_MAX] for i in range(0, len(symbols), SPARK_MAX)]
-    for k, batch in enumerate(batches):
-        if k and pause:
-            SLEEP(pause)
-        wanted = {to_yahoo(s): s for s in batch}
-        try:
-            got = parse_spark(yahoo_get(spark_path(batch, rng, interval)), wanted)
-        except (ScanError, ValueError) as e:
-            for s in batch:
-                failed[s] = str(e)
-            continue
-        for s in batch:
-            if s in got:
-                data[s] = got[s]
-            else:
-                failed[s] = "no data from Yahoo"
-        if a is not None and len(batches) > 25 and (k + 1) % 50 == 0:
-            progress(a, "  spark %d of %d requests" % (k + 1, len(batches)))
-    return data, failed
-
-
-def read_symbols(a, offline_syms=None):
-    if a.symbols:
-        syms = [s for s in re.split(r"[,\s]+", a.symbols.upper()) if s]
-    elif a.watchlist:
-        syms = symbols_from_file(a.watchlist)
-    elif offline_syms is not None and not a.universe:
-        syms = sorted(offline_syms)  # offline: every chart in the file, unless a list was given
-    else:
-        path = a.universe or DEFAULT_UNIVERSE
-        if not os.path.exists(path):
-            raise ScanError("no %s yet: run `scan.py universe` first, or pass --symbols" % path)
-        syms = symbols_from_file(path)
+def compute_vwap_series(bars):
+    """Cumulative session VWAP per bar."""
+    cum_pv = 0.0
+    cum_v = 0
     out = []
-    for s in syms:
-        if s not in out:
-            out.append(s)
-    if a.limit:
-        out = out[:a.limit]
-    if not out:
-        raise ScanError("no symbols to scan")
+    for b in bars:
+        tp = (b["h"] + b["l"] + b["c"]) / 3.0
+        v = max(1, int(b["v"]))
+        cum_pv += tp * v
+        cum_v += v
+        out.append(cum_pv / cum_v)
     return out
 
 
-def symbols_from_file(path):
-    if not os.path.exists(path):
-        raise ScanError("no file at %s" % path)
-    with open(path, encoding="utf-8") as fh:
-        text = fh.read()
-    if text.lstrip().startswith(("{", "[")):
-        try:
-            doc = json.loads(text)
-        except ValueError as e:
-            raise ScanError("%s is not valid JSON: %s" % (path, e))
-        items = doc.get("hits", []) if isinstance(doc, dict) else doc
-        return [str(x.get("symbol") if isinstance(x, dict) else x).upper() for x in items if x]
-    out = []
-    for ln in text.splitlines():
-        ln = ln.strip()
-        if ln and not ln.startswith("#"):
-            out.append(ln.split("|")[0].strip().upper())
-    return out
-
-
-def read_config(path):
-    if not path or not os.path.exists(path):
-        return {}
-    try:
-        with open(path, encoding="utf-8") as fh:
-            cfg = json.load(fh)
-    except ValueError as e:
-        raise ScanError("%s is not valid JSON: %s" % (path, e))
-    return cfg if isinstance(cfg, dict) else {}
-
-
-def write_json(path, doc):
-    d = os.path.dirname(path)
-    if d:
-        os.makedirs(d, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(doc, fh, indent=2)
-        fh.write("\n")
-
-
-def money(x):
-    return "${:,.2f}".format(x)
-
-
-# ---------------------------------------------------------------- commands
-
-def cmd_universe(a):
-    t0 = time.time()
-    texts = {}
-    for k, fname in enumerate(NASDAQ_FILES):
-        if a.offline:
-            p = os.path.join(a.offline, fname)
-            if not os.path.exists(p):
-                raise ScanError("no %s in %s" % (fname, a.offline))
-            with open(p, encoding="utf-8", errors="replace") as fh:
-                texts[fname] = fh.read()
+def detect_vwap_reclaim(bars, min_vol_ratio=1.5, min_below_bars=2):
+    """VWAP reclaim on 5m bars:
+    After at least 3 opening bars, price closes strictly below session VWAP for at least
+    `min_below_bars` bars, then a bar closes strictly above VWAP with volume >= min_vol_ratio."""
+    if len(bars) < 6:
+        return None
+    vwaps = compute_vwap_series(bars)
+    below_streak = 0
+    recent_low = None
+    for idx in range(3, len(bars)):
+        b = bars[idx]
+        vw = vwaps[idx]
+        if b["c"] < vw:
+            below_streak += 1
+            recent_low = b["l"] if recent_low is None else min(recent_low, b["l"])
+        elif b["c"] > vw and below_streak >= min_below_bars:
+            vr = _vol_ratio(bars, idx)
+            if vr >= float(min_vol_ratio):
+                close_dt = b["t"] + datetime.timedelta(minutes=5)
+                reclaim_low = round(recent_low if recent_low is not None else b["l"], 2)
+                return {
+                    "setup": "vwap_reclaim",
+                    "label": LABEL["vwap_reclaim"],
+                    "price": round(b["c"], 2),
+                    "time": N.fmt_time(close_dt),
+                    "bar_index": idx,
+                    "volume_ratio": vr,
+                    "over_pct": round((b["c"] - vw) / vw * 100.0, 2),
+                    "levels": {
+                        "vwap": round(vw, 2),
+                        "reclaim_low": reclaim_low,
+                        "pattern_low": reclaim_low,
+                        "trigger_level": round(vw, 2),
+                    },
+                }
+            # volume failed: keep streak only if still below, else reset
+            below_streak = 0
+            recent_low = None
         else:
-            if k and a.pause:
-                SLEEP(a.pause)
-            try:
-                texts[fname] = http_get(NASDAQ_URL + fname, timeout=60)
-            except urllib.error.HTTPError as e:
-                raise ScanError("nasdaqtrader.com answered HTTP %d for %s" % (e.code, fname))
-            except (urllib.error.URLError, OSError) as e:
-                raise ScanError("could not reach nasdaqtrader.com: %s" % getattr(e, "reason", e))
-    kept, counts, created = build_universe(texts)
-    if not a.no_write:
-        d = os.path.dirname(a.out)
-        if d:
-            os.makedirs(d, exist_ok=True)
-        with open(a.out, "w", encoding="utf-8") as fh:
-            for sym, name in kept:
-                fh.write("%s|%s\n" % (sym, name))
-    dropped = {k: v for k, v in counts.items() if k not in ("keep", "rows")}
-    if a.json:
-        print(json.dumps({"count": len(kept), "rows": counts.get("rows", 0), "files_created": created,
-                          "dropped": dropped, "out": None if a.no_write else a.out,
-                          "seconds": round(time.time() - t0, 1)}, indent=2))
-    else:
-        print("Nasdaq Trader symbol directories%s: %s rows." % (
-            (", files of %s ET" % created) if created else "", "{:,}".format(counts.get("rows", 0))))
-        print("Kept %s US-listed common stocks, ordinary shares and ADRs." % "{:,}".format(len(kept)))
-        print("Dropped: " + ", ".join("%s %s" % ("{:,}".format(v), k)
-                                      for k, v in sorted(dropped.items(), key=lambda kv: -kv[1])) + ".")
-        if not a.no_write:
-            print("Wrote %s (one SYMBOL|Name a line)." % a.out)
-    return 0 if kept else 1
+            below_streak = 0
+            recent_low = None
+    return None
 
 
-def cmd_daily(a):
-    t0 = time.time()
-    now = parse_now(a.now)
-    offline_syms = None
-    if a.offline:
-        data, failed = load_offline(a.offline)
-        offline_syms = sorted(set(data) | set(failed))
-    symbols = read_symbols(a, offline_syms)
-    if not a.offline:
-        progress(a, "Fetching daily closes for %s symbols (%d spark requests)..."
-                 % ("{:,}".format(len(symbols)), (len(symbols) + SPARK_MAX - 1) // SPARK_MAX))
-        data, failed = fetch_spark(symbols, "3mo", "1d", a.pause, a)
-    hits, counts, last_date = scan_daily(data, symbols, now, a.min_price, a.min_volume)
-    nfailed = len(symbols) - counts["fetched"]
-    as_of = ("%s close" % last_date.isoformat()) if last_date else None
-    doc = {"created_by": "trader-scanner", "created_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "mode": "daily",
-           "as_of": as_of, "universe": len(symbols), "scanned": counts["scanned"], "failed": nfailed,
-           "source": "yahoo", "filters": {"min_price": a.min_price, "min_volume": a.min_volume},
-           "note": NOTE, "hits": hits}
-    if a.offline:
-        doc["offline"] = os.path.basename(a.offline.rstrip("/"))
-    if not a.no_write:
-        write_json(a.out, doc)
-    if a.json:
-        print(json.dumps(dict(doc, counts=counts, seconds=round(time.time() - t0, 1)), indent=2))
-        return 0 if hits else 1
-    local = to_eastern(now)
-    print("Daily scan, %s ET, closes through %s (Yahoo spark, daily closes only)." % (
-        local.strftime("%a %Y-%m-%d %H:%M"), last_date.isoformat() if last_date else "nothing"))
-    print("Fetched %s of %s charts%s. %s passed the liquidity filter ($%s+ and %s+ shares)%s; "
-          "%s scanned." % ("{:,}".format(counts["fetched"]), "{:,}".format(len(symbols)),
-                           (" (%s failed or had no data)" % "{:,}".format(nfailed)) if nfailed else "",
-                           "{:,}".format(counts["fetched"] - counts["illiquid"]), _n(a.min_price),
-                           "{:,}".format(a.min_volume),
-                           (", %d had under %d days" % (counts["short"], MIN_DAILY_BARS)) if counts["short"] else "",
-                           "{:,}".format(counts["scanned"])))
-    if hits:
-        per = [(k, sum(1 for h in hits if k in h["setups"])) for k, _ in SETUPS]
-        print("%d chart%s matched a setup: %s." % (len(hits), "" if len(hits) == 1 else "s",
-                                                  ", ".join("%d %s" % (n, LABEL[k]) for k, n in per if n)))
-        print("Most traded first (price x volume):")
-    else:
-        print("No setups.")
-    for h in hits[:a.show]:
-        print("  %-6s %10s  RSI %5.1f  %s" % (h["symbol"], money(h["price"]), h["rsi"],
-                                              ", ".join(LABEL[t] for t in h["setups"])))
-    if len(hits) > a.show:
-        print("  ... and %d more in the watchlist (--show N for more)." % (len(hits) - a.show))
-    if not a.no_write:
-        print("Wrote %s (mode daily, %d hit%s)." % (a.out, len(hits), "" if len(hits) == 1 else "s"))
-    print(NOTE + " Next: pick one chart, then /trader-news TICKER.")
-    return 0 if hits else 1
+def wilder_rsi(closes, period=14):
+    if len(closes) < period + 1:
+        return []
+    gains, losses = [], []
+    for i in range(1, period + 1):
+        d = closes[i] - closes[i - 1]
+        gains.append(max(d, 0.0))
+        losses.append(max(-d, 0.0))
+    avg_g = sum(gains) / period
+    avg_l = sum(losses) / period
+    out = [None] * period
+
+    def _rsi(g, l):
+        if l == 0:
+            return 100.0
+        rs = g / l
+        return 100.0 - (100.0 / (1.0 + rs))
+
+    out.append(_rsi(avg_g, avg_l))
+    for i in range(period + 1, len(closes)):
+        d = closes[i] - closes[i - 1]
+        avg_g = (avg_g * (period - 1) + max(d, 0.0)) / period
+        avg_l = (avg_l * (period - 1) + max(-d, 0.0)) / period
+        out.append(_rsi(avg_g, avg_l))
+    return out
 
 
-def _n(x):
-    x = float(x)
-    return str(int(x)) if x == int(x) else "%.2f" % x
+def detect_daily_setups(bars):
+    """Run daily close setups on 1d bars (>= 30 bars). Returns list of setup ids matched."""
+    if len(bars) < 25:
+        return []
+    closes = [b["c"] for b in bars]
+    last_c = closes[-1]
+    prev_c = closes[-2]
+    hits = []
+
+    # 1. breakout_20d
+    if last_c > max(closes[-21:-1]):
+        hits.append(("breakout_20d", {"level": round(max(closes[-21:-1]), 2)}))
+
+    # 2. bull_flag daily (up > 10% in 10 sessions prior to last 5, then last 5 inside 5%)
+    if len(closes) >= 16:
+        pole_base = closes[-16]
+        pole_top = closes[-6]
+        win5 = closes[-5:]
+        if pole_base > 0 and (pole_top - pole_base) / pole_base > 0.10:
+            if min(win5) > 0 and (max(win5) - min(win5)) / min(win5) <= 0.05:
+                hits.append(("bull_flag", {"flag_high": round(max(win5), 2), "flag_low": round(min(win5), 2)}))
+
+    # 3. reclaim_ma20
+    if len(closes) >= 21:
+        ma20_prev = sum(closes[-21:-1]) / 20.0
+        ma20_now = sum(closes[-20:]) / 20.0
+        if prev_c < ma20_prev and last_c > ma20_now:
+            hits.append(("reclaim_ma20", {"ma20": round(ma20_now, 2)}))
+
+    # 4 & 5. oversold / oversold_bounce
+    rsis = wilder_rsi(closes, 14)
+    if rsis and rsis[-1] is not None:
+        if rsis[-1] < 30.0:
+            hits.append(("oversold", {"rsi14": round(rsis[-1], 2)}))
+        if len(rsis) >= 2 and rsis[-2] is not None and rsis[-2] < 30.0 and last_c > prev_c:
+            hits.append(("oversold_bounce", {"rsi14_prev": round(rsis[-2], 2), "rsi14": round(rsis[-1], 2)}))
+
+    # 6. daily triangle breakout
+    tri = detect_triangle(bars, min_vol_ratio=1.2)
+    if tri:
+        hits.append(("triangle_daily", tri["levels"]))
+
+    return hits
 
 
-def cmd_orb(a):
-    t0 = time.time()
-    now = parse_now(a.now)
-    at = parse_hhmm(a.at) if a.at else None
-    cfg = read_config(a.config)
-    until = parse_hhmm(a.until or cfg.get("no_entries_after") or "15:30", "--until")
-    data = failed = None
-    explicit_day = None
-    offline_syms = None
-    if a.offline:
-        data, failed = load_offline(a.offline)
-        offline_syms = sorted(set(data) | set(failed))
-        if not a.now:
-            days = [ts_to_eastern(s["t"][-1]).date() for s in data.values() if s["t"]]
-            if days:
-                explicit_day = max(days)
-                if at is None:
-                    raise ScanError("offline replay: give --at HH:MM or --now \"YYYY-MM-DD HH:MM\"")
-    day, cutoff = orb_window(now, at, a.or_minutes, until, explicit_day)
-    symbols = read_symbols(a, offline_syms)
-    confirm = None
-    if not a.offline:
-        today = to_eastern(parse_now(None)).date()
-        if (today - day).days > 6:
-            raise ScanError("Yahoo's free 5-minute history is short: replay %s with --offline" % day.isoformat())
-        rng = "1d" if day == today else "5d"
-        progress(a, "Stage 1: 5-minute closes for %s symbols (%d spark requests)..."
-                 % ("{:,}".format(len(symbols)), (len(symbols) + SPARK_MAX - 1) // SPARK_MAX))
-        data, failed = fetch_spark(symbols, rng, "%dm" % BAR_MIN, a.pause, a)
-        done = []
+# ---------------------------------------------------------------------------
+# Scan runners
+# ---------------------------------------------------------------------------
 
-        def confirm(sym):
-            if a.pause:
-                SLEEP(a.pause)
-            done.append(sym)
-            if len(done) % 50 == 0:
-                progress(a, "  stage 2: %d v8 charts so far" % len(done))
-            return parse_chart(yahoo_get(chart_path(sym, rng, "%dm" % BAR_MIN)), sym)
-    hits, counts, failed2 = scan_orb(data, symbols, day, cutoff, a.or_minutes, a.min_price, a.min_volume, confirm,
-                                     a.max_confirm)
-    failed = dict(failed or {})
-    failed.update(failed2)
-    nfailed = len([s for s in symbols if s in failed])
-    as_of = "%s %s ET" % (day.isoformat(), cutoff.strftime("%H:%M"))
-    doc = {"created_by": "trader-scanner", "created_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "mode": "orb",
-           "as_of": as_of, "universe": len(symbols), "scanned": counts["scanned"], "failed": nfailed,
-           "unconfirmed": counts["unconfirmed"], "source": "yahoo", "or_minutes": a.or_minutes,
-           "interval": "%dm" % BAR_MIN,
-           "filters": {"min_price": a.min_price, "min_volume": a.min_volume}, "note": NOTE, "hits": hits}
-    if a.offline:
-        doc["offline"] = os.path.basename(a.offline.rstrip("/"))
-    if not a.no_write:
-        write_json(a.out, doc)
-    if a.json:
-        print(json.dumps(dict(doc, counts=counts, seconds=round(time.time() - t0, 1)), indent=2))
-        return 0 if hits else 1
-    print("Opening-range breakout scan, %s %s ET: %d-minute range (9:30 to %s), 5-minute bars, Yahoo."
-          % (day_label(day), clock_label(cutoff), a.or_minutes, clock_label(slot(day, a.or_minutes // BAR_MIN))))
-    print("Fetched %s of %s charts%s; %s usable%s; %s candidates, %s confirmed with real highs and lows."
-          % ("{:,}".format(counts["fetched"]), "{:,}".format(len(symbols)),
-             (" (%s failed or had no data)" % "{:,}".format(nfailed)) if nfailed else "",
-             "{:,}".format(counts["scanned"]),
-             (" (%s under the price / volume floor)" % "{:,}".format(counts["illiquid"])) if counts["illiquid"] else "",
-             "{:,}".format(counts["candidates"]), "{:,}".format(counts["confirmed"])))
-    if counts["unconfirmed"]:
-        print("PARTIAL: %s more candidates were not checked (only the %s most traded are; --max-confirm 0 "
-              "checks all)." % ("{:,}".format(counts["unconfirmed"]), "{:,}".format(a.max_confirm)))
-    if hits:
-        print("%d of %s charts closed above their opening-range high by %s:"
-              % (len(hits), ("the %s checked" % "{:,}".format(counts["confirmed"])) if counts["unconfirmed"]
-                 else "{:,}".format(counts["scanned"]), clock_label(cutoff)))
-        for h in hits[:a.show]:
-            print("  %8s  %-6s %10s  range %s to %s  %+.2f%% over" % (
-                h["at"], h["symbol"], money(h["price"]), _p(h["or_low"]), _p(h["or_high"]), h["pct_over"]))
-        if len(hits) > a.show:
-            print("  ... and %d more in the watchlist (--show N for more)." % (len(hits) - a.show))
-    else:
-        print("No chart closed above its opening-range high by %s." % clock_label(cutoff))
-    if not a.no_write:
-        print("Wrote %s (mode orb, %d hit%s)." % (a.out, len(hits), "" if len(hits) == 1 else "s"))
-    print(NOTE + " Next: pick one chart, then /trader-news TICKER and /trader-entry TICKER.")
-    return 0 if hits else 1
+def run_intraday_scan(mode, symbols, day, now, cfg, feed="yahoo", offline_bundle=None,
+                      min_price=50.0, min_turnover_cr=25.0, min_vol_ratio=1.5, or_minutes=15):
+    detectors = {
+        "orb": lambda b: detect_orb(b, or_minutes=or_minutes, min_vol_ratio=min_vol_ratio),
+        "flag": lambda b: detect_bull_flag(b, min_vol_ratio=min_vol_ratio),
+        "triangle": lambda b: detect_triangle(b, min_vol_ratio=min_vol_ratio),
+        "vwap": lambda b: detect_vwap_reclaim(b, min_vol_ratio=min_vol_ratio),
+    }
+    active = list(detectors.keys()) if mode == "patterns" else [mode]
+
+    hits = []
+    usable = 0
+    failed = 0
+    filtered_illiquid = 0
+    for idx, sym in enumerate(symbols):
+        try:
+            bars = fetch_bars_for_symbol(sym, day, interval_min=5, feed=feed, now=now, cfg=cfg,
+                                         offline_bundle=offline_bundle)
+        except N.NSEError:
+            failed += 1
+            continue
+        if not bars:
+            failed += 1
+            continue
+        usable += 1
+        ok_liq, t_cr = passes_liquidity(bars, min_price=min_price, min_turnover_cr=min_turnover_cr)
+        if not ok_liq:
+            filtered_illiquid += 1
+            continue
+        for key in active:
+            res = detectors[key](bars)
+            if res:
+                res["symbol"] = sym
+                res["avg_turnover_cr"] = t_cr
+                hits.append(res)
+        if offline_bundle is None and idx + 1 < len(symbols):
+            N.SLEEP(N.PAUSE)
+
+    hits.sort(key=lambda h: (h["avg_turnover_cr"], h["volume_ratio"]), reverse=True)
+    return {
+        "mode": mode,
+        "as_of": now.isoformat(),
+        "market": "NSE",
+        "feed": feed,
+        "universe": len(symbols),
+        "scanned": usable,
+        "failed": failed,
+        "filtered_illiquid": filtered_illiquid,
+        "hits": hits,
+    }
 
 
-def _p(x):
-    return "{:,.2f}".format(x)
+def run_daily_scan(symbols, day, now, cfg, feed="yahoo", offline_bundle=None,
+                   min_price=50.0, min_turnover_cr=25.0):
+    hits = []
+    usable = 0
+    failed = 0
+    filtered_illiquid = 0
+    for idx, sym in enumerate(symbols):
+        try:
+            bars = fetch_bars_for_symbol(sym, day, interval_min=1440, feed=feed, now=now, cfg=cfg,
+                                         offline_bundle=offline_bundle)
+        except N.NSEError:
+            failed += 1
+            continue
+        if len(bars) < 25:
+            failed += 1
+            continue
+        usable += 1
+        ok_liq, t_cr = passes_liquidity(bars, min_price=min_price, min_turnover_cr=min_turnover_cr)
+        if not ok_liq:
+            filtered_illiquid += 1
+            continue
+        matches = detect_daily_setups(bars)
+        last_b = bars[-1]
+        for setup_id, lvls in matches:
+            vr = _vol_ratio(bars, len(bars) - 1)
+            hits.append({
+                "symbol": sym,
+                "setup": setup_id,
+                "label": LABEL.get(setup_id, setup_id),
+                "price": round(last_b["c"], 2),
+                "time": last_b["t"].date().isoformat(),
+                "volume_ratio": vr,
+                "avg_turnover_cr": t_cr,
+                "levels": lvls,
+            })
+        if offline_bundle is None and idx + 1 < len(symbols):
+            N.SLEEP(N.PAUSE)
+
+    hits.sort(key=lambda h: h["avg_turnover_cr"], reverse=True)
+    return {
+        "mode": "daily",
+        "as_of": now.isoformat(),
+        "market": "NSE",
+        "feed": feed,
+        "universe": len(symbols),
+        "scanned": usable,
+        "failed": failed,
+        "filtered_illiquid": filtered_illiquid,
+        "hits": hits,
+    }
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def _resolve_symbols(args, cfg):
+    if args.symbols:
+        return N.parse_symbols(args.symbols)
+    if args.watchlist:
+        wl = N.read_json(args.watchlist, {})
+        syms = [h["symbol"] for h in (wl or {}).get("hits", []) if h.get("symbol")]
+        if not syms:
+            raise ScanError("No symbols in watchlist %s." % args.watchlist)
+        return list(dict.fromkeys(N.norm_symbol(s) for s in syms))
+    rows, _ = load_universe(args.universe)
+    syms = [r[0] for r in rows]
+    if args.limit and args.limit > 0:
+        syms = syms[: args.limit]
+    return syms
+
+
+def _print_report(doc, show_limit=40):
+    hits = doc["hits"]
+    print("NSE %s scan (%s) | feed: %s | %d universe, %d scanned, %d failed, %d filtered by liquidity"
+          % (doc["mode"], doc["as_of"][:19], doc["feed"], doc["universe"], doc["scanned"],
+             doc["failed"], doc.get("filtered_illiquid", 0)))
+    if not hits:
+        print("No setups matched the rule.")
+        return
+    print("%d setup hit(s) (most liquid first):" % len(hits))
+    for h in hits[:show_limit]:
+        lvls = ", ".join("%s=%s" % (k, v) for k, v in (h.get("levels") or {}).items() if k != "pattern_low")
+        print("  %-12s %-14s %10s  vol %.2fx  turnover %s  [%s] (%s)"
+              % (h["symbol"], h["setup"], N.inr(h["price"]), h.get("volume_ratio", 0.0),
+                 N.crore(h.get("avg_turnover_cr", 0.0) * 1e7), h["time"], lvls))
+    if len(hits) > show_limit:
+        print("  ... and %d more (see --show or --json)." % (len(hits) - show_limit))
+    print(NOTE)
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="Chart Scanner (trader-scanner): daily setups and opening-range breakouts.")
-    sub = ap.add_subparsers(dest="cmd")
+    p = argparse.ArgumentParser(description="NSE Chart Scanner (trader-scanner)")
+    p.add_argument("mode", choices=("universe", "daily", "orb", "flag", "triangle", "vwap", "patterns"),
+                   help="What to run")
+    p.add_argument("--index", default="nifty200", choices=tuple(N.NSE_INDEX_CSV.keys()),
+                   help="NSE index CSV for universe (default nifty200)")
+    p.add_argument("--symbols", help="Comma-separated NSE symbols (e.g. RELIANCE,TCS,INFY)")
+    p.add_argument("--watchlist", help="Scan symbols from an existing watchlist JSON")
+    p.add_argument("--universe", default=DEFAULT_UNIVERSE, help="Path to universe.txt")
+    p.add_argument("--limit", type=int, default=0, help="Cap symbols scanned (0 = all)")
+    p.add_argument("--feed", choices=("yahoo", "upstox", "angelone"), help="Market data feed")
+    p.add_argument("--min-price", type=float, help="Min share price in INR (default from config)")
+    p.add_argument("--min-turnover-cr", type=float, help="Min daily turnover in INR crore (default from config)")
+    p.add_argument("--min-vol-ratio", type=float, default=1.5, help="Min breakout bar volume ratio (default 1.5)")
+    p.add_argument("--or-minutes", type=int, default=15, help="Opening range minutes (default 15: 09:15-09:30 IST)")
+    p.add_argument("--at", help="Cut intraday clock at HH:MM IST today")
+    p.add_argument("--now", help="Pin IST clock: 'YYYY-MM-DD HH:MM'")
+    p.add_argument("--offline", help="Read saved CSV or JSON/folder instead of network")
+    p.add_argument("--no-write", action="store_true", help="Do not write trader/watchlist.json")
+    p.add_argument("--show", type=int, default=40, help="Max rows to print")
+    p.add_argument("--json", action="store_true", help="Print JSON output")
+    args = p.parse_args(argv)
 
-    p = sub.add_parser("universe", help="download Nasdaq Trader's lists -> trader/universe.txt")
-    p.add_argument("--out", default=DEFAULT_UNIVERSE)
-    p.add_argument("--offline", metavar="DIR", help="a folder with nasdaqlisted.txt and otherlisted.txt")
-    p.add_argument("--no-write", action="store_true")
-    p.add_argument("--pause", type=float, default=PAUSE)
-    p.add_argument("--json", action="store_true")
-
-    def common(p, min_price, min_volume):
-        g = p.add_mutually_exclusive_group()
-        g.add_argument("--symbols", help="comma-separated tickers instead of the universe")
-        g.add_argument("--watchlist", metavar="FILE", help="a watchlist.json (hits) or a text file of tickers")
-        p.add_argument("--universe", help="symbol list, one SYMBOL|Name a line (default %s)" % DEFAULT_UNIVERSE)
-        p.add_argument("--limit", type=int, help="scan only the first N symbols")
-        p.add_argument("--min-price", type=float, default=min_price)
-        p.add_argument("--min-volume", type=int, default=min_volume)
-        p.add_argument("--offline", metavar="PATH", help="fixture folder or file instead of the network")
-        p.add_argument("--now", help='pretend it is this time ("2026-10-19 10:15" New York, or ...Z)')
-        p.add_argument("--out", default="trader/watchlist.json")
-        p.add_argument("--no-write", action="store_true")
-        p.add_argument("--pause", type=float, default=PAUSE, help="seconds between requests (%.1f)" % PAUSE)
-        p.add_argument("--show", type=int, default=50, help="hits to print (all are written)")
-        p.add_argument("--quiet", action="store_true")
-        p.add_argument("--json", action="store_true")
-
-    p = sub.add_parser("daily", help="pre-market setups from daily closes")
-    common(p, 5.0, 1000000)
-    p = sub.add_parser("orb", help="opening-range breakouts so far today")
-    common(p, 5.0, 0)
-    p.add_argument("--or-minutes", type=int, default=15)
-    p.add_argument("--max-confirm", type=int, default=MAX_CONFIRM,
-                   help="v8 charts to fetch in stage 2, most traded first (%d; 0 = all)" % MAX_CONFIRM)
-    p.add_argument("--at", help="cut the clock at this New York time, HH:MM")
-    p.add_argument("--until", help="no new entries after HH:MM (default: config no_entries_after, 15:30)")
-    p.add_argument("--config", default="trader/config.json")
-    a = ap.parse_args(argv)
-    if not a.cmd:
-        ap.print_help()
-        return 1
     try:
-        return {"universe": cmd_universe, "daily": cmd_daily, "orb": cmd_orb}[a.cmd](a)
-    except ScanError as e:
-        print("scan.py: %s" % e, file=sys.stderr)
-        return 1
-    except KeyboardInterrupt:
-        print("scan.py: stopped", file=sys.stderr)
+        cfg = N.load_config(DEFAULT_CONFIG)
+        if args.mode == "universe":
+            clean, note = build_universe(args.index, offline=args.offline, out_path=args.universe)
+            if args.json:
+                print(json.dumps({"count": len(clean), "source": note, "file": args.universe}, indent=2))
+            else:
+                print("Wrote %d NSE symbols to %s (%s)." % (len(clean), args.universe, note))
+            return 0
+
+        now = N.parse_now(args.now) if args.now else N.now_ist()
+        if args.at:
+            t = N.hhmm(args.at)
+            now = now.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
+
+        feed = args.feed or cfg.get("data_feed") or "yahoo"
+        min_price = args.min_price if args.min_price is not None else float(cfg.get("min_price_inr", 50))
+        min_turn = args.min_turnover_cr if args.min_turnover_cr is not None else float(cfg.get("min_avg_turnover_cr", 25))
+        offline_bundle = _load_offline_bundle(args.offline) if args.offline else None
+        syms = _resolve_symbols(args, cfg)
+
+        if args.mode != "daily":
+            if not args.offline:
+                reason = N.closed_reason(now.date(), cfg)
+                if reason:
+                    raise ScanError(reason)
+                or_end_t = (datetime.datetime.combine(now.date(), N.OPEN, N.IST)
+                            + datetime.timedelta(minutes=args.or_minutes))
+                if args.mode == "orb" and now < or_end_t + datetime.timedelta(minutes=5):
+                    raise ScanError("Too early for ORB at %s (first 5m bar after 09:%02d closes at %s)."
+                                    % (N.fmt_time(now), 15 + args.or_minutes,
+                                       N.fmt_time(or_end_t + datetime.timedelta(minutes=5))))
+                cutoff_t = N.config_time(cfg, "no_entries_after", N.NO_ENTRIES_AFTER)
+                if now.time() > N.hhmm(cfg.get("safety_cutoff", N.SAFETY_CUTOFF)):
+                    raise ScanError("Past safety cutoff (%s IST): intraday scan expired."
+                                    % cfg.get("safety_cutoff", N.SAFETY_CUTOFF))
+            doc = run_intraday_scan(
+                args.mode, syms, now.date(), now, cfg, feed=feed,
+                offline_bundle=offline_bundle, min_price=min_price,
+                min_turnover_cr=min_turn, min_vol_ratio=args.min_vol_ratio,
+                or_minutes=args.or_minutes,
+            )
+        else:
+            doc = run_daily_scan(
+                syms, now.date(), now, cfg, feed=feed,
+                offline_bundle=offline_bundle, min_price=min_price,
+                min_turnover_cr=min_turn,
+            )
+
+        if not args.no_write:
+            N.write_json(DEFAULT_WATCHLIST, doc)
+
+        if args.json:
+            print(json.dumps(doc, indent=2))
+        else:
+            _print_report(doc, show_limit=args.show)
+        return 0 if doc["hits"] else 1
+    except N.NSEError as e:
+        print(str(e))
         return 1
 
 
