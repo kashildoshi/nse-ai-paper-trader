@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
-st.set_page_config(page_title="NSE Pro â€” AI Trading Terminal", page_icon="ðŸ“ˆ", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="NSE Pro — AI Trading Terminal", page_icon="📈", layout="wide", initial_sidebar_state="collapsed")
 
 IST = timezone(timedelta(hours=5, minutes=30))
 DB_PATH = "paper_trades.db"
@@ -196,7 +196,7 @@ div.stButton > button[kind="primary"]:hover {
 """, unsafe_allow_html=True)
 
 PATTERN_DESCRIPTIONS = {
-    "orb": "15m Opening Range Breakout (ORB): Price broke decisively above the 09:15â€“09:30 IST range high with institutional volume surge.",
+    "orb": "15m Opening Range Breakout (ORB): Price broke decisively above the 09:15–09:30 IST range high with institutional volume surge.",
     "vwap_reclaim": "VWAP Reclaim: Price absorbed morning dip below VWAP and reclaimed institutional average price with rising volume.",
     "bull_flag": "Bull Flag Continuation: Strong impulsive upward leg followed by tight consolidation and upper-trendline breakout.",
     "ema_crossover": "9/21 EMA Crossover: Fast 9 EMA crossed above 21 EMA with positive RSI momentum."
@@ -430,7 +430,7 @@ if "active_nse_symbol" not in st.session_state:
 def render_top_index_bar():
     now_ist = datetime.now(IST)
     market_open = (now_ist.weekday() < 5) and (9, 15) <= (now_ist.hour, now_ist.minute) <= (15, 30)
-    mkt_status = f"â— NSE OPEN â€¢ {now_ist.strftime('%H:%M:%S IST')}" if market_open else f"â—‹ NSE CLOSED â€¢ {now_ist.strftime('%d %b %H:%M IST')}"
+    mkt_status = f"● NSE OPEN • {now_ist.strftime('%H:%M:%S IST')}" if market_open else f"○ NSE CLOSED • {now_ist.strftime('%d %b %H:%M IST')}"
 
     q_all = fetch_all_market_quotes(tuple(DEFAULT_NSE_WATCHLIST))
     n50 = q_all.get("NIFTY 50", {"ltp": 0, "chg": 0, "pct": 0})
@@ -500,14 +500,14 @@ def render_live_chart_and_inspector(active_sym: str, tf: str, indicators: list):
             t_stat = active_trade["status"]
             t_side = str(active_trade.get("side", "LONG")).upper(); t_pnl = ((t_ent - ltp) * t_qty if t_side == "SHORT" else (ltp - t_ent) * t_qty) if t_stat == "OPEN" else float(active_trade["net_pnl"])
             p_cls = "ux-green" if t_pnl >= 0 else "ux-red"
-            pos_badge = f"<div style='text-align:right;'><div style='font-size:0.74rem; color:#8B949E;'>{t_stat} POSITION ({t_qty} QTY @ â‚¹{t_ent:,.2f})</div><div class='{p_cls}' style='font-size:1.05rem;'>P&L: â‚¹{t_pnl:+,.2f}</div></div>"
+            pos_badge = f"<div style='text-align:right;'><div style='font-size:0.74rem; color:#8B949E;'>{t_stat} POSITION ({t_qty} QTY @ ₹{t_ent:,.2f})</div><div class='{p_cls}' style='font-size:1.05rem;'>P&L: ₹{t_pnl:+,.2f}</div></div>"
 
         st.markdown(f"""
         <div class="scrip-bar">
             <div>
                 <div><span class="scrip-sym">{active_sym}</span><span class="scrip-nse">NSE EQ</span></div>
                 <div style="margin-top:0.2rem;">
-                    <span class="scrip-ltp">â‚¹{ltp:,.2f}</span>
+                    <span class="scrip-ltp">₹{ltp:,.2f}</span>
                     <span class="{chg_cls}" style="margin-left:0.6rem; font-size:0.9rem;">{day_chg:+.2f} ({day_chg_pct:+.2f}%)</span>
                 </div>
             </div>
@@ -549,14 +549,14 @@ def render_live_chart_and_inspector(active_sym: str, tf: str, indicators: list):
                 sl_p = float(active_trade["final_stop"]) if active_trade["final_stop"] > 0 else round(ent_p * 0.992, 2)
                 tgt_p = float(active_trade["target_price"]) if active_trade["target_price"] > 0 else round(ent_p * 1.015, 2)
                 if ltp > 0 and abs(ent_p - ltp) / ltp < 0.15:
-                    fig.add_hline(y=ent_p, line_dash="dash", line_color="#6EA8FE", line_width=1.2, annotation_text=f"BUY â‚¹{ent_p:,.2f}", annotation_position="top left", row=1, col=1)
-                    fig.add_hline(y=tgt_p, line_dash="dot", line_color="#00B386", line_width=1.2, annotation_text=f"TGT â‚¹{tgt_p:,.2f}", annotation_position="top left", row=1, col=1)
-                    fig.add_hline(y=sl_p, line_dash="dot", line_color="#F23645", line_width=1.2, annotation_text=f"SL â‚¹{sl_p:,.2f}", annotation_position="bottom left", row=1, col=1)
+                    fig.add_hline(y=ent_p, line_dash="dash", line_color="#6EA8FE", line_width=1.2, annotation_text=f"BUY ₹{ent_p:,.2f}", annotation_position="top left", row=1, col=1)
+                    fig.add_hline(y=tgt_p, line_dash="dot", line_color="#00B386", line_width=1.2, annotation_text=f"TGT ₹{tgt_p:,.2f}", annotation_position="top left", row=1, col=1)
+                    fig.add_hline(y=sl_p, line_dash="dot", line_color="#F23645", line_width=1.2, annotation_text=f"SL ₹{sl_p:,.2f}", annotation_position="bottom left", row=1, col=1)
                     c_min = min(c_min, sl_p)
                     c_max = max(c_max, tgt_p)
 
             pad = max((c_max - c_min) * 0.08, c_max * 0.002)
-            fig.update_yaxes(range=[c_min - pad, c_max + pad], tickprefix="â‚¹", row=1, col=1)
+            fig.update_yaxes(range=[c_min - pad, c_max + pad], tickprefix="₹", row=1, col=1)
 
             curr_row = 2
             if show_vol:
@@ -600,10 +600,10 @@ def render_live_chart_and_inspector(active_sym: str, tf: str, indicators: list):
         st.markdown(f"""
         <div class="ux-panel">
             <div class="ux-panel-title"><span>Market Overview</span><span>NSE</span></div>
-            <div class="ux-kv"><span class="ux-k">Open</span><span class="ux-v">â‚¹{day_open:,.2f}</span></div>
-            <div class="ux-kv"><span class="ux-k">High</span><span class="ux-v" style="color:#00B386;">â‚¹{day_high:,.2f}</span></div>
-            <div class="ux-kv"><span class="ux-k">Low</span><span class="ux-v" style="color:#F23645;">â‚¹{day_low:,.2f}</span></div>
-            <div class="ux-kv"><span class="ux-k">Prev. Close</span><span class="ux-v">â‚¹{prev_close:,.2f}</span></div>
+            <div class="ux-kv"><span class="ux-k">Open</span><span class="ux-v">₹{day_open:,.2f}</span></div>
+            <div class="ux-kv"><span class="ux-k">High</span><span class="ux-v" style="color:#00B386;">₹{day_high:,.2f}</span></div>
+            <div class="ux-kv"><span class="ux-k">Low</span><span class="ux-v" style="color:#F23645;">₹{day_low:,.2f}</span></div>
+            <div class="ux-kv"><span class="ux-k">Prev. Close</span><span class="ux-v">₹{prev_close:,.2f}</span></div>
             <div class="ux-kv" style="border:none;"><span class="ux-k">Volume</span><span class="ux-v">{day_vol:,}</span></div>
         </div>
         """, unsafe_allow_html=True)
@@ -639,7 +639,7 @@ def render_live_chart_and_inspector(active_sym: str, tf: str, indicators: list):
         stored_cat = active_trade["news_catalyst"].strip() if (active_trade is not None and active_trade["news_catalyst"].strip()) else ""
         n_html = f"<div style='font-size:0.81rem; color:#E6EDF3; margin-bottom:0.4rem;'><b>Catalyst:</b> {stored_cat}</div>" if stored_cat else ""
         for item in news_list[:2]:
-            n_html += f"<div style='font-size:0.8rem; margin-bottom:0.35rem;'>â€¢ <a href='{item['link']}' target='_blank' style='color:#6EA8FE; text-decoration:none;'>{item['title']}</a></div>"
+            n_html += f"<div style='font-size:0.8rem; margin-bottom:0.35rem;'>• <a href='{item['link']}' target='_blank' style='color:#6EA8FE; text-decoration:none;'>{item['title']}</a></div>"
         if not n_html:
             n_html = "<div style='font-size:0.8rem; color:#8B949E;'>No breaking headlines; pure price-volume technical setup.</div>"
 
@@ -661,7 +661,7 @@ def render_bottom_dock(watchlist_tuple: tuple):
     total_charges = float(closed["charges"].sum()) if not closed.empty else 0.0
     available_funds = INITIAL_CAPITAL + realized_pnl
 
-    dock_positions, dock_insights = st.tabs(["ðŸ’¼ Positions (Running & Completed)", "ðŸ“Š Insights & Analytics"])
+    dock_positions, dock_insights = st.tabs(["💼 Positions (Running & Completed)", "📊 Insights & Analytics"])
 
     with dock_positions:
         running_pnl = 0.0
@@ -680,23 +680,23 @@ def render_bottom_dock(watchlist_tuple: tuple):
                     t_side = str(r.get("side", "LONG")).upper(); row_pnl = (ep - cur_q) * q if t_side == "SHORT" else (cur_q - ep) * q
                     running_pnl += row_pnl
                     ltp_or_exit = cur_q
-                    badge = "ðŸŸ¢ RUNNING"
+                    badge = "🟢 RUNNING"
                 else:
                     row_pnl = float(r["net_pnl"])
                     ltp_or_exit = float(r["exit_price"]) if r["exit_price"] > 0 else ep
-                    badge = "âšª COMPLETED"
+                    badge = "⚪ COMPLETED"
 
                 pos_rows.append({
                     "Status": badge,
                     "Symbol (NSE)": s,
-                    "Side": "ðŸ”´ SELLâ†’BUY" if str(r.get("side", "LONG")).upper() == "SHORT" else "ðŸŸ¢ BUYâ†’SELL", "Strategy": str(r["pattern"]).upper(),
+                    "Side": "🔴 SELL→BUY" if str(r.get("side", "LONG")).upper() == "SHORT" else "🟢 BUY→SELL", "Strategy": str(r["pattern"]).upper(),
                     "Qty": q,
-                    "Buy Avg (â‚¹)": round(ep, 2),
-                    "LTP / Exit (â‚¹)": round(ltp_or_exit, 2),
-                    "Trailing SL (â‚¹)": round(float(r["final_stop"]), 2),
-                    "Target (â‚¹)": round(float(r["target_price"]), 2),
-                    "Charges (â‚¹)": round(float(r["charges"]), 2),
-                    "Net P&L (â‚¹)": round(row_pnl, 2),
+                    "Buy Avg (₹)": round(ep, 2),
+                    "LTP / Exit (₹)": round(ltp_or_exit, 2),
+                    "Trailing SL (₹)": round(float(r["final_stop"]), 2),
+                    "Target (₹)": round(float(r["target_price"]), 2),
+                    "Charges (₹)": round(float(r["charges"]), 2),
+                    "Net P&L (₹)": round(row_pnl, 2),
                     "Exit Reason": str(r["exit_reason"]) if r["exit_reason"] else "Active Trailing",
                     "Time (IST)": str(r["exit_time"] if r["exit_time"] else r["entry_time"])[:19]
                 })
@@ -710,38 +710,38 @@ def render_bottom_dock(watchlist_tuple: tuple):
         <div class="dock-summary">
             <div class="dock-metric">
                 <div class="dock-lbl">Total Net P&L (Running + Completed)</div>
-                <div class="dock-val {tot_cls}">â‚¹{total_net_pnl:+,.2f}</div>
+                <div class="dock-val {tot_cls}">₹{total_net_pnl:+,.2f}</div>
             </div>
             <div class="dock-metric">
                 <div class="dock-lbl">Running Positions ({len(open_df)})</div>
-                <div class="dock-val {run_cls}">â‚¹{running_pnl:+,.2f}</div>
+                <div class="dock-val {run_cls}">₹{running_pnl:+,.2f}</div>
             </div>
             <div class="dock-metric">
                 <div class="dock-lbl">Completed Positions ({len(closed)})</div>
-                <div class="dock-val {cmp_cls}">â‚¹{realized_pnl:+,.2f}</div>
+                <div class="dock-val {cmp_cls}">₹{realized_pnl:+,.2f}</div>
             </div>
             <div class="dock-metric">
                 <div class="dock-lbl">Intraday Charges Paid</div>
-                <div class="dock-val" style="color:#F0F6FC;">â‚¹{total_charges:,.2f}</div>
+                <div class="dock-val" style="color:#F0F6FC;">₹{total_charges:,.2f}</div>
             </div>
         </div>
         """, unsafe_allow_html=True)
 
-        p_filter = st.radio("Filter Positions", ["All Positions", "ðŸŸ¢ Running (Open)", "âšª Completed (Closed)"], horizontal=True, label_visibility="collapsed")
+        p_filter = st.radio("Filter Positions", ["All Positions", "🟢 Running (Open)", "⚪ Completed (Closed)"], horizontal=True, label_visibility="collapsed")
         if pos_rows:
             pos_df = pd.DataFrame(pos_rows)
-            if p_filter == "ðŸŸ¢ Running (Open)":
-                pos_df = pos_df[pos_df["Status"] == "ðŸŸ¢ RUNNING"]
-            elif p_filter == "âšª Completed (Closed)":
-                pos_df = pos_df[pos_df["Status"] == "âšª COMPLETED"]
+            if p_filter == "🟢 Running (Open)":
+                pos_df = pos_df[pos_df["Status"] == "🟢 RUNNING"]
+            elif p_filter == "⚪ Completed (Closed)":
+                pos_df = pos_df[pos_df["Status"] == "⚪ COMPLETED"]
 
             def color_pnl(val):
                 color = "#00B386" if val > 0 else ("#F23645" if val < 0 else "#8B949E")
                 return f"color: {color}; font-weight: 600;"
 
-            st.dataframe(pos_df.style.map(color_pnl, subset=["Net P&L (â‚¹)"]), use_container_width=True, hide_index=True)
+            st.dataframe(pos_df.style.map(color_pnl, subset=["Net P&L (₹)"]), use_container_width=True, hide_index=True)
         else:
-            st.info("No running or completed NSE positions yet. Click **â–¶ Run Offline Demo** above to test or wait for live market signals.")
+            st.info("No running or completed NSE positions yet. Click **▶ Run Offline Demo** above to test or wait for live market signals.")
 
     with dock_insights:
         wins = int((closed["net_pnl"] > 0).sum()) if not closed.empty else 0
@@ -751,14 +751,14 @@ def render_bottom_dock(watchlist_tuple: tuple):
         pf = (gross_win / gross_loss) if gross_loss > 0 else (gross_win if gross_win > 0 else 0.0)
 
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Portfolio Equity", f"â‚¹{available_funds:,.2f}", f"{(realized_pnl/INITIAL_CAPITAL)*100:+.2f}%")
+        m1.metric("Portfolio Equity", f"₹{available_funds:,.2f}", f"{(realized_pnl/INITIAL_CAPITAL)*100:+.2f}%")
         m2.metric("Strategy Win Rate", f"{win_rate:.1f}%", f"{wins} Wins / {len(closed)-wins} Losses")
         m3.metric("Profit Factor", f"{pf:.2f}", "Gross Profit / Loss")
-        m4.metric("Total Statutory Charges", f"â‚¹{total_charges:,.2f}", "STT + Exchange + GST")
+        m4.metric("Total Statutory Charges", f"₹{total_charges:,.2f}", "STT + Exchange + GST")
 
         ins_c1, ins_c2 = st.columns([1.5, 1])
         with ins_c1:
-            st.subheader("ðŸ“ˆ Intraday Portfolio Equity Curve")
+            st.subheader("📈 Intraday Portfolio Equity Curve")
             if not closed.empty:
                 closed_eq = closed.reset_index(drop=True)
                 closed_eq["trade_num"] = closed_eq.index + 1
@@ -771,12 +771,12 @@ def render_bottom_dock(watchlist_tuple: tuple):
                     fill="tozeroy", fillcolor="rgba(41, 98, 255, 0.14)",
                     text=eq_df["symbol"]
                 ))
-                fig_eq.update_layout(template="plotly_dark", paper_bgcolor="#161B22", plot_bgcolor="#161B22", height=310, margin=dict(l=15, r=15, t=15, b=15), yaxis=dict(tickprefix="â‚¹"))
+                fig_eq.update_layout(template="plotly_dark", paper_bgcolor="#161B22", plot_bgcolor="#161B22", height=310, margin=dict(l=15, r=15, t=15, b=15), yaxis=dict(tickprefix="₹"))
                 st.plotly_chart(fig_eq, use_container_width=True)
             else:
                 st.caption("Completed trades will automatically generate your intraday equity curve.")
         with ins_c2:
-            st.subheader("ðŸ§  Strategy Pattern Insights")
+            st.subheader("🧠 Strategy Pattern Insights")
             if not closed.empty:
                 pat_df = closed.groupby("pattern", as_index=False).agg(
                     Trades=("net_pnl", "count"),
@@ -798,15 +798,15 @@ def main():
 
     act1, act2, act3, act4 = st.columns([1.2, 1.3, 2.5, 1.5])
     with act1:
-        if st.button("â–¶ Run Offline Demo", use_container_width=True, type="primary"):
+        if st.button("▶ Run Offline Demo", use_container_width=True, type="primary"):
             seed_demo_trades()
             st.rerun()
     with act2:
-        if st.button("â†º Reset â‚¹1,00,000", use_container_width=True):
+        if st.button("↺ Reset ₹1,00,000", use_container_width=True):
             reset_account()
             st.rerun()
     with act3:
-        st.markdown(f"<div style='padding-top:0.38rem; font-size:0.86rem; color:#8B949E;'>Available Margin: <span style='font-weight:700; color:#F0F6FC;'>â‚¹{available_funds:,.2f}</span> Â |Â  AI Gate: <span style='color:#6EA8FE; font-weight:600;'>Time-Machine >65%</span></div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='padding-top:0.38rem; font-size:0.86rem; color:#8B949E;'>Available Margin: <span style='font-weight:700; color:#F0F6FC;'>₹{available_funds:,.2f}</span>  |  AI Gate: <span style='color:#6EA8FE; font-weight:600;'>Time-Machine >65%</span></div>", unsafe_allow_html=True)
     with act4:
         custom_sym = st.text_input("Search NSE Symbol", placeholder="Add NSE symbol (e.g. ITC)...", label_visibility="collapsed")
 
@@ -828,9 +828,9 @@ def main():
         open_syms = set(open_df["symbol"].str.upper().tolist()) if not open_df.empty else set()
         for sym in wl_tuple:
             q = quotes.get(sym, {"ltp": 0.0, "pct": 0.0})
-            tag = " ðŸŸ¢" if sym in open_syms else ""
+            tag = " 🟢" if sym in open_syms else ""
             pct_str = f"{q['pct']:+.2f}%" if q["ltp"] > 0 else "NSE"
-            btn_label = f"{sym}{tag}  â€¢  â‚¹{q['ltp']:,.1f} ({pct_str})" if q["ltp"] > 0 else f"{sym}{tag} â€¢ NSE"
+            btn_label = f"{sym}{tag}  •  ₹{q['ltp']:,.1f} ({pct_str})" if q["ltp"] > 0 else f"{sym}{tag} • NSE"
             is_sel = (st.session_state.active_nse_symbol == sym)
             if st.button(btn_label, key=f"wl_{sym}", use_container_width=True, type="primary" if is_sel else "secondary"):
                 st.session_state.active_nse_symbol = sym
