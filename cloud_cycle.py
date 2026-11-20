@@ -40,9 +40,10 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("CREATE TABLE IF NOT EXISTS trades (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol TEXT, side TEXT, pattern TEXT, qty INTEGER, signal_entry_price REAL, entry_price REAL, exit_price REAL, high_water REAL, initial_stop REAL, final_stop REAL, target_price REAL, exit_reason TEXT, gross_pnl REAL, charges REAL, net_pnl REAL, peak_capture_pct REAL, status TEXT, entry_time TEXT, exit_time TEXT, entry_reason TEXT, tech_params TEXT, news_catalyst TEXT, timemachine_prob REAL)")
     cols = {r[1] for r in conn.execute("PRAGMA table_info(trades)").fetchall()}
-    for col, typ in [("side", "TEXT"), ("target_price", "REAL"), ("entry_reason", "TEXT"), ("tech_params", "TEXT"), ("timemachine_prob", "REAL")]:
+    for col, typ in [("status", "TEXT"), ("side", "TEXT"), ("target_price", "REAL"), ("entry_reason", "TEXT"), ("tech_params", "TEXT"), ("timemachine_prob", "REAL")]:
         if col not in cols:
             conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {typ}")
+    conn.execute("UPDATE trades SET status = CASE WHEN exit_reason IS NULL OR TRIM(exit_reason) = '' THEN 'OPEN' ELSE 'CLOSED' END WHERE status IS NULL")
     conn.commit()
     conn.close()
 
@@ -105,6 +106,7 @@ def step_once(do_full_scan=False):
                 s_side, s_sym, s_tm, s_ep, s_tgt, s_sl = sig["side"], sig["symbol"], sig["timemachine_prob"], sig["entry_price"], sig["target_price"], sig["stop_loss"]
                 d_txt = "BUY to SELL" if s_side == "LONG" else "SELL to BUY"
                 send_tg(f"<b>NSE {s_side} ({d_txt}): {s_sym}</b>\nTM: <b>{s_tm}%</b> | Qty: {qty} @ Rs {s_ep:,.2f}\nTGT: Rs {s_tgt:,.2f} | SL: Rs {s_sl:,.2f}")
+    conn.execute("UPDATE trades SET status = CASE WHEN exit_reason IS NULL OR TRIM(exit_reason) = '' THEN 'OPEN' ELSE 'CLOSED' END WHERE status IS NULL")
     conn.commit()
     conn.close()
     if changed:
