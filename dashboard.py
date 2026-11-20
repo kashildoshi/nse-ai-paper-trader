@@ -256,7 +256,7 @@ def _fetch_single_quote(ticker: str):
     except Exception:
         return {"ltp": 0.0, "chg": 0.0, "pct": 0.0}
 
-@st.cache_data(ttl=10)
+@st.cache_data(ttl=1)
 def fetch_all_market_quotes(symbols: tuple):
     tasks = {"NIFTY 50": "%5ENSEI", "NIFTY BANK": "%5ENSEBANK"}
     for s in symbols:
@@ -270,7 +270,7 @@ def fetch_all_market_quotes(symbols: tuple):
             results[name] = fut.result()
     return results
 
-@st.cache_data(ttl=6)
+@st.cache_data(ttl=1)
 def fetch_tv_candles(symbol: str, interval: str = "5m"):
     clean_sym = str(symbol).replace(".NS", "").strip().upper()
     range_map = {"1m": "1d", "5m": "5d", "15m": "5d", "1d": "3mo"}
@@ -339,7 +339,7 @@ def fetch_tv_candles(symbol: str, interval: str = "5m"):
     except Exception:
         return {"ok": False}
 
-@st.cache_data(ttl=180)
+@st.cache_data(ttl=1)
 def fetch_stock_news(symbol: str):
     clean_sym = str(symbol).replace(".NS", "").strip().upper()
     url = f"https://query1.finance.yahoo.com/v1/finance/search?q={clean_sym}.NS&newsCount=4"
@@ -619,7 +619,7 @@ def render_live_chart_and_inspector(active_sym: str, tf: str, indicators: list):
                 <div class="ux-panel-title"><span>AI Trade Rationale</span><span>{active_trade['status']}</span></div>
                 <div>
                     <span class="tag-blue">{pat_key.upper()}</span>
-                    <span class="tag-mint">TM {tm_prob:.1f}% (>65%)</span>
+                    <span class="tag-mint">TM {tm_prob:.1f}% (> 55%)</span>
                 </div>
                 <div style="font-size:0.83rem; color:#C9D1D9; line-height:1.45; margin-top:0.35rem;">{reason_txt}</div>
                 <div style="font-size:0.76rem; color:#6EA8FE; margin-top:0.45rem;">{tech_txt}</div>
@@ -630,7 +630,7 @@ def render_live_chart_and_inspector(active_sym: str, tf: str, indicators: list):
             <div class="ux-panel">
                 <div class="ux-panel-title"><span>AI Scanner Status</span><span>STANDBY</span></div>
                 <div style="font-size:0.83rem; color:#8B949E; line-height:1.45;">
-                    No active trade on <b>{active_sym}</b> yet. Bot triggers automatically when pattern + Time-Machine (>65%) + Risk Gate align.
+                    No active trade on <b>{active_sym}</b> yet. Bot triggers automatically when pattern + Time-Machine (> 55%) + Risk Gate align.
                 </div>
             </div>
             """, unsafe_allow_html=True)
@@ -806,7 +806,7 @@ def main():
             reset_account()
             st.rerun()
     with act3:
-        st.markdown(f"<div style='padding-top:0.38rem; font-size:0.86rem; color:#8B949E;'>Available Margin: <span style='font-weight:700; color:#F0F6FC;'>₹{available_funds:,.2f}</span>  |  AI Gate: <span style='color:#6EA8FE; font-weight:600;'>Time-Machine >65%</span></div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='padding-top:0.38rem; font-size:0.86rem; color:#8B949E;'>Available Margin: <span style='font-weight:700; color:#F0F6FC;'>₹{available_funds:,.2f}</span>  |  AI Gate: <span style='color:#6EA8FE; font-weight:600;'>Time-Machine > 55%</span></div>", unsafe_allow_html=True)
     with act4:
         custom_sym = st.text_input("Search NSE Symbol", placeholder="Add NSE symbol (e.g. ITC)...", label_visibility="collapsed")
 

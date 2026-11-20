@@ -168,7 +168,7 @@ def main():
             "- **Charges:** Brokerage + 0.025% Sell STT + NSE Txn + SEBI + 0.003% Buy Stamp + 18% GST\n"
             "- **Trailing SL:** Arms at **+0.5%**, trails **0.6%** below `high_water` (ratchets up only)\n"
             "- **Safety Cutoff:** **15:20 IST** square-off\n"
-            "- **Entry Gate:** `trader-risk` PASS & `trader-timemachine` > 65%"
+            "- **Entry Gate:** `trader-risk` PASS & `trader-timemachine` > 55%"
         )
         if st.button("Run Offline Demo Session"):
             from nse_autonomous_runner import run_demo_session

@@ -135,7 +135,7 @@ def evaluate_nse_symbol(symbol: str, min_prob: float = 65.0) -> dict | None:
     return None
 
 def scan_full_nse_universe(max_symbols: int = 250, min_prob: float = 65.0) -> list[dict]:
-    """Scans the NSE equity universe in parallel and returns top Long & Short setups (>65%)."""
+    """Scans the NSE equity universe in parallel and returns top Long & Short setups (> 55%)."""
     universe = fetch_all_nse_symbols(max_symbols=max_symbols)
     signals = []
     with ThreadPoolExecutor(max_workers=16) as pool:
@@ -150,5 +150,5 @@ def scan_full_nse_universe(max_symbols: int = 250, min_prob: float = 65.0) -> li
 if __name__ == "__main__":
     syms = fetch_all_nse_symbols(500)
     print(f"Loaded {len(syms)} NSE EQ symbols. Running sample parallel scan...")
-    hits = scan_full_nse_universe(max_symbols=100, min_prob=65.0)
-    print(f"Found {len(hits)} setups (>65%): {hits[:5]}")
+    hits = scan_full_nse_universe(max_symbols=100, min_prob=55.0)
+    print(f"Found {len(hits)} setups (> 55%): {hits[:5]}")

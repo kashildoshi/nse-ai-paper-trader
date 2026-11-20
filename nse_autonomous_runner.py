@@ -5,7 +5,7 @@ Orchestrates the 11 converted NSE skills + PaperBroker (SQLite WAL) + TelegramRe
   * Every 3 minutes (09:15-15:20 IST): scans liquid NSE stocks (.NS) via yfinance,
     detects ORB, Bull Flag, Triangle & VWAP Reclaim patterns with volume & liquidity
     filters, checks trader-exit + trader-budget + trader-risk + trader-timemachine
-    (requires win_prob_pct > 65%), and opens paper positions (+0.03% slippage).
+    (requires win_prob_pct > 55%), and opens paper positions (+0.03% slippage).
   * Every 10 seconds (09:15-15:20 IST): monitors open positions, ratchets the
     Trailing Stop-Loss (0.6% below peak high_water once profit >= 0.5%), and
     auto-exits on SL/target/15:20 IST safety cutoff (with -0.03% slippage + Indian taxes).
@@ -317,7 +317,7 @@ class AutonomousRunner:
 # ---------------------------------------------------------------------------
 
 def _synth_60d_and_today(sym, pattern, base_px, day, seed=42):
-    """Build 25 bullish-biased prior sessions (so TimeMachine win odds > 65%) + today's setup day."""
+    """Build 25 bullish-biased prior sessions (so TimeMachine win odds > 55%) + today's setup day."""
     rng = random.Random(seed)
     bars = []
     # 25 trading days before `day`

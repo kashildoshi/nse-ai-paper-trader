@@ -93,7 +93,7 @@ def step_once(do_full_scan=False):
         active_cnt = cur.execute("SELECT COUNT(*) FROM trades WHERE status=?", ("OPEN",)).fetchone()[0]
         active_syms = {r[0] for r in cur.execute("SELECT symbol FROM trades WHERE status=?", ("OPEN",)).fetchall()}
         if active_cnt < 3:
-            for sig in nse_scanner.scan_full_nse_universe(max_symbols=250, min_prob=65.0):
+            for sig in nse_scanner.scan_full_nse_universe(max_symbols=250, min_prob=55.0):
                 if active_cnt >= 3:
                     break
                 if sig["symbol"] in active_syms:
